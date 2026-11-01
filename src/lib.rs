@@ -1,4 +1,5 @@
 pub mod arena;
+pub mod client;
 pub mod dedup;
 pub mod engine;
 pub mod flat_book;

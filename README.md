@@ -80,7 +80,7 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   ├── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
 │   └── flat_vs_btree_bench.rs     # Direct-indexed flat array vs BTreeMap lookup benchmark
 ├── docs/
-│   └── notes/                     # Architecture Decision Records (001 to 034)
+│   └── notes/                     # Architecture Decision Records (001 to 035)
 ├── src/
 │   ├── bin/
 │   │   ├── bombardment_client.rs   # 1,000,000-order TCP load and stress test client
@@ -88,6 +88,7 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   │   ├── kafka_adapter.rs       # Idempotent Kafka bridge adapter demonstration
 │   │   └── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
 │   ├── arena.rs                   # Pre-allocated slot pool & intrusive doubly-linked list
+│   ├── client.rs                  # Strongly-typed Rust Client SDK (InboundClient, EventSubscriber)
 │   ├── dedup.rs                   # Zero-allocation sliding deduplication filter
 │   ├── engine.rs                  # Single-writer matching engine event loop
 │   ├── flat_book.rs               # Direct-indexed flat tick array & bitset scanning
@@ -237,3 +238,47 @@ Streamed to connected translators/subscribers on port `9002`:
 | 48 | `leaves_quantity` | `u64` | Remaining unfilled quantity |
 | 56 | `event_type` | `u8` | `1` = Accepted, `2` = Trade, `3` = Cancelled, `4` = Rejected, `5` = L2Update, `6` = Modified, `255` = Shutdown |
 | 57 | `_padding` | `[u8; 7]` | 8-byte natural alignment |
+
+---
+
+## Rust Client SDK
+
+The crate includes a built-in, strongly-typed client library (`match_engine::client`) eliminating raw socket handling:
+
+```rust
+use match_engine::client::{MatchEngineClient, ClientEvent};
+use match_engine::types::{OrderId, Price, Quantity, Side};
+
+fn main() -> std::io::Result<()> {
+    // Connect both channels
+    let mut client = MatchEngineClient::connect("127.0.0.1:9001", "127.0.0.1:9002")?;
+
+    // 1. Submit a resting Limit Buy order
+    client.inbound.place_gtc_limit(OrderId(101), Side::Buy, Price(1000), Quantity(50), 1)?;
+    client.inbound.flush()?;
+
+    // 2. Amend quantity down in-place (retains FIFO priority)
+    client.inbound.modify_order(OrderId(101), None, Quantity(25), 2)?;
+    client.inbound.flush()?;
+
+    // 3. Consume outbound events
+    while let Ok(event) = client.subscriber.read_event() {
+        match event {
+            ClientEvent::OrderAccepted { order_id, resting, .. } => {
+                println!("Order accepted: {}, resting: {}", order_id.0, resting);
+            }
+            ClientEvent::TradeExecuted { taker_order_id, price, quantity, .. } => {
+                println!("Trade executed: taker={}, price={}, qty={}", taker_order_id.0, price.0, quantity.0);
+            }
+            ClientEvent::OrderModified { order_id, new_quantity, .. } => {
+                println!("Order modified: id={}, new_qty={}", order_id.0, new_quantity.0);
+            }
+            ClientEvent::EngineShutdown { .. } => break,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+```
+

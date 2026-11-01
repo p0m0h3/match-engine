@@ -1,10 +1,8 @@
 //! Example downstream Kafka Adapter demonstrating how to consume binary events from port 9002
 //! and idempotently translate them into Kafka-compatible message payloads.
 
-use std::io::Read;
-use std::net::TcpStream;
+use match_engine::client::{ClientEvent, EventSubscriber};
 use std::time::Duration;
-use match_engine::wire::WireEventFrame;
 
 /// Simulated Kafka Producer tracking published sequence IDs for Exactly-Once delivery.
 pub struct MockKafkaProducer {
@@ -50,10 +48,10 @@ fn main() {
     println!("Connecting to Outbound Broadcaster at 127.0.0.1:9002...");
 
     let target_addr = "127.0.0.1:9002";
-    let mut stream = loop {
-        match TcpStream::connect(target_addr) {
+    let mut subscriber = loop {
+        match EventSubscriber::connect(target_addr) {
             Ok(s) => {
-                println!("Connected to matching engine outbound stream!");
+                println!("Connected to matching engine outbound stream via Client SDK!");
                 break s;
             }
             Err(_) => {
@@ -63,76 +61,53 @@ fn main() {
         }
     };
 
-    stream.set_nodelay(true).unwrap();
-
     let mut kafka_producer = MockKafkaProducer::new("exchange.market.events");
-    let mut buf = [0u8; WireEventFrame::SIZE];
 
-    loop {
-        match stream.read_exact(&mut buf) {
-            Ok(()) => {
-                let frame = WireEventFrame::from_bytes(&buf);
-
-                // Translate binary WireEventFrame into JSON/Kafka format
-                let (event_name, key, json_payload) = match frame.event_type {
-                    1 => (
-                        "OrderAccepted",
-                        frame.order_id,
-                        format!(
-                            "{{\"event\":\"OrderAccepted\",\"order_id\":{},\"resting\":{}}}",
-                            frame.order_id, frame.leaves_quantity == 1
-                        ),
-                    ),
-                    2 => (
-                        "TradeExecuted",
-                        frame.order_id,
-                        format!(
-                            "{{\"event\":\"TradeExecuted\",\"taker_order_id\":{},\"maker_order_id\":{},\"price\":{},\"quantity\":{}}}",
-                            frame.order_id, frame.maker_order_id, frame.price, frame.quantity
-                        ),
-                    ),
-                    3 => (
-                        "OrderCancelled",
-                        frame.order_id,
-                        format!(
-                            "{{\"event\":\"OrderCancelled\",\"order_id\":{}}}",
-                            frame.order_id
-                        ),
-                    ),
-                    4 => (
-                        "OrderRejected",
-                        frame.order_id,
-                        format!(
-                            "{{\"event\":\"OrderRejected\",\"order_id\":{}}}",
-                            frame.order_id
-                        ),
-                    ),
-                    5 => (
-                        "L2Update",
-                        frame.price,
-                        format!(
-                            "{{\"event\":\"L2Update\",\"side\":\"{}\",\"price\":{},\"new_qty\":{}}}",
-                            if frame.maker_order_id == 0 { "Buy" } else { "Sell" },
-                            frame.price,
-                            frame.quantity
-                        ),
-                    ),
-                    255 => {
-                        println!("EngineShutdown received from match engine. Exiting cleanly.");
-                        break;
-                    }
-                    _ => continue,
-                };
-
-                let _ = event_name;
-                // Idempotently publish to Kafka topic
-                let _ = kafka_producer.publish(frame.sequence_id, key, &json_payload);
-            }
-            Err(e) => {
-                println!("Connection closed by engine or error: {:?}", e);
+    while let Ok(event) = subscriber.read_event() {
+        let (seq, key, json_payload) = match event {
+            ClientEvent::OrderAccepted { sequence_id, order_id, resting, .. } => (
+                sequence_id,
+                order_id.0,
+                format!("{{\"event\":\"OrderAccepted\",\"order_id\":{},\"resting\":{}}}", order_id.0, resting),
+            ),
+            ClientEvent::TradeExecuted { sequence_id, taker_order_id, maker_order_id, price, quantity, .. } => (
+                sequence_id,
+                taker_order_id.0,
+                format!(
+                    "{{\"event\":\"TradeExecuted\",\"taker_order_id\":{},\"maker_order_id\":{},\"price\":{},\"quantity\":{}}}",
+                    taker_order_id.0, maker_order_id.0, price.0, quantity.0
+                ),
+            ),
+            ClientEvent::OrderModified { sequence_id, order_id, new_price, new_quantity, .. } => (
+                sequence_id,
+                order_id.0,
+                format!(
+                    "{{\"event\":\"OrderModified\",\"order_id\":{},\"new_price\":{},\"new_qty\":{}}}",
+                    order_id.0, new_price.0, new_quantity.0
+                ),
+            ),
+            ClientEvent::OrderCancelled { sequence_id, order_id, .. } => (
+                sequence_id,
+                order_id.0,
+                format!("{{\"event\":\"OrderCancelled\",\"order_id\":{}}}", order_id.0),
+            ),
+            ClientEvent::OrderRejected { sequence_id, order_id, .. } => (
+                sequence_id,
+                order_id.0,
+                format!("{{\"event\":\"OrderRejected\",\"order_id\":{}}}", order_id.0),
+            ),
+            ClientEvent::EngineShutdown { sequence_id, .. } => {
+                println!("EngineShutdown event #{} received from match engine. Exiting cleanly.", sequence_id);
                 break;
             }
-        }
+            ClientEvent::Unknown { sequence_id, event_type } => (
+                sequence_id,
+                0,
+                format!("{{\"event\":\"Unknown\",\"type\":{}}}", event_type),
+            ),
+        };
+
+        let _ = kafka_producer.publish(seq, key, &json_payload);
     }
 
     println!(
