@@ -1,4 +1,5 @@
 pub mod arena;
+pub mod dedup;
 pub mod engine;
 pub mod gateway;
 pub mod market_data;

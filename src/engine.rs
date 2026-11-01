@@ -37,6 +37,7 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
     mut event_producer: Producer<EngineEvent, OUT_SIZE>,
 ) {
     let mut book = OrderBook::new();
+    let mut dedup_filter = crate::dedup::SlidingDedupFilter::with_capacity(65_536);
 
     loop {
         // Poll non-blocking from inbound lock-free ring buffer
@@ -44,8 +45,26 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
             match cmd {
                 EngineCommand::PlaceOrder(order) => {
                     let order_id = order.id;
+
+                    // Idempotency check: drop historical duplicates that already finished
+                    if dedup_filter.contains(order_id) {
+                        push_event_spinning(
+                            &mut event_producer,
+                            EngineEvent::OrderRejected {
+                                order_id,
+                                reason: "Duplicate OrderId: order has already executed",
+                            },
+                        );
+                        continue;
+                    }
+
                     match book.place_order(order) {
                         OrderPlacementResult::Accepted { trades, resting_order_id } => {
+                            // If order did not rest, record to dedup filter so retries are rejected
+                            if resting_order_id.is_none() {
+                                dedup_filter.record(order_id);
+                            }
+
                             // Emit trade events first
                             for trade in trades {
                                 push_event_spinning(&mut event_producer, EngineEvent::TradeExecuted(trade));
@@ -69,6 +88,7 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
                 }
                 EngineCommand::CancelOrder(order_id) => {
                     if let Some(_cancelled) = book.cancel_order(order_id) {
+                        dedup_filter.record(order_id);
                         push_event_spinning(
                             &mut event_producer,
                             EngineEvent::OrderCancelled { order_id },

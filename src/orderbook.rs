@@ -79,8 +79,15 @@ impl OrderBook {
         snapshot
     }
 
-    /// Process an order in FIFO price-time priority.
+    /// Process an order in FIFO price-time priority with duplicate protection.
     pub fn place_order(&mut self, mut order: Order) -> OrderPlacementResult {
+        // 0. Idempotency Check: Reject if OrderId is already active
+        if self.order_locations.contains_key(&order.id) {
+            return OrderPlacementResult::Rejected {
+                reason: "Duplicate OrderId: order is already active on the book",
+            };
+        }
+
         // 1. Post-Only check
         if order.time_in_force == TimeInForce::PostOnly {
             let would_cross = match order.side {
@@ -314,6 +321,17 @@ impl OrderBook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_duplicate_active_order_rejected() {
+        let mut book = OrderBook::new();
+        let res1 = book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        assert!(matches!(res1, OrderPlacementResult::Accepted { .. }));
+
+        // Attempt to submit identical OrderId while active
+        let res2 = book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        assert!(matches!(res2, OrderPlacementResult::Rejected { .. }));
+    }
 
     #[test]
     fn test_l2_snapshot_aggregation() {
