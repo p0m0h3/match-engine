@@ -397,6 +397,72 @@ impl OrderBook {
         }
     }
 
+    /// Modify/amend an existing order's quantity or price atomically.
+    /// - Decreasing quantity: Retains exact FIFO queue priority in O(1).
+    /// - Increasing quantity / Changing price: Loses priority (unlinks and re-inserts).
+    pub fn modify_order(
+        &mut self,
+        order_id: OrderId,
+        new_price: Option<Price>,
+        new_quantity: Quantity,
+    ) -> Result<(Order, Vec<Trade>), &'static str> {
+        let (price, side, slot) = match self.order_locations.get(&order_id) {
+            Some(&loc) => loc,
+            None => return Err("Order not found for modification"),
+        };
+
+        let current_order = self.arena.get(slot).order;
+        let target_price = new_price.unwrap_or(price);
+
+        // Case 1: Same price and decreasing quantity -> In-place O(1) update with priority retained
+        if target_price == price && new_quantity.0 <= current_order.leaves_quantity.0 {
+            if new_quantity.0 == 0 {
+                // Modified down to 0 is an effective cancel
+                let cancelled = self.cancel_order(order_id).unwrap();
+                return Ok((cancelled, Vec::new()));
+            }
+
+            let delta = current_order.leaves_quantity.0 - new_quantity.0;
+
+            // Adjust price level total quantity
+            match side {
+                Side::Buy => {
+                    if self.flat_bids.in_bounds(price) {
+                        let queue = self.flat_bids.get_level_mut(price).unwrap();
+                        queue.total_quantity -= delta;
+                    } else if let Some(queue) = self.sparse_bids.get_mut(&std::cmp::Reverse(price)) {
+                        queue.total_quantity -= delta;
+                    }
+                }
+                Side::Sell => {
+                    if self.flat_asks.in_bounds(price) {
+                        let queue = self.flat_asks.get_level_mut(price).unwrap();
+                        queue.total_quantity -= delta;
+                    } else if let Some(queue) = self.sparse_asks.get_mut(&price) {
+                        queue.total_quantity -= delta;
+                    }
+                }
+            }
+
+            // Adjust resting node leaves_quantity
+            let node = self.arena.get_mut(slot);
+            node.order.leaves_quantity = new_quantity;
+
+            return Ok((node.order, Vec::new()));
+        }
+
+        // Case 2: Changing price or increasing quantity -> Loses priority (Cancel-Replace)
+        let mut order_to_reinsert = self.cancel_order(order_id).unwrap();
+        order_to_reinsert.price = target_price;
+        order_to_reinsert.initial_quantity = new_quantity;
+        order_to_reinsert.leaves_quantity = new_quantity;
+
+        match self.place_order(order_to_reinsert) {
+            OrderPlacementResult::Accepted { trades, .. } => Ok((order_to_reinsert, trades)),
+            OrderPlacementResult::Rejected { reason } => Err(reason),
+        }
+    }
+
     /// Guaranteed O(1) order cancellation using intrusive unlink without queue scan.
     pub fn cancel_order(&mut self, order_id: OrderId) -> Option<Order> {
         let (price, side, slot) = self.order_locations.remove(&order_id)?;
@@ -467,6 +533,61 @@ mod tests {
         // Attempt to submit identical OrderId while active
         let res2 = book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
         assert!(matches!(res2, OrderPlacementResult::Rejected { .. }));
+    }
+
+    #[test]
+    fn test_modify_order_decrease_retains_priority() {
+        let mut book = OrderBook::new();
+
+        // Seed two orders at price 100: Order 1 (10 units), Order 2 (20 units)
+        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(20)));
+
+        // Modify Order 1 down from 10 to 4 units
+        let (modified, trades) = book.modify_order(OrderId(1), None, Quantity(4)).unwrap();
+        assert_eq!(modified.leaves_quantity, Quantity(4));
+        assert!(trades.is_empty());
+
+        // L2 depth should now reflect 4 + 20 = 24 total volume
+        let l2 = book.get_l2_snapshot::<1>();
+        assert_eq!(l2.bids[0].total_quantity, Quantity(24));
+
+        // Submit crossing sell for 5 units:
+        // Order 1 should fill completely (4 units) FIRST, proving priority retention!
+        let res = book.place_order(Order::new_limit(OrderId(3), Side::Sell, Price(100), Quantity(5)));
+        if let OrderPlacementResult::Accepted { trades, .. } = res {
+            assert_eq!(trades.len(), 2);
+            assert_eq!(trades[0].maker_order_id, OrderId(1));
+            assert_eq!(trades[0].quantity, Quantity(4));
+            assert_eq!(trades[1].maker_order_id, OrderId(2));
+            assert_eq!(trades[1].quantity, Quantity(1));
+        } else {
+            panic!("Expected order to match");
+        }
+    }
+
+    #[test]
+    fn test_modify_order_increase_loses_priority() {
+        let mut book = OrderBook::new();
+
+        // Seed two orders at price 100: Order 1 (10 units), Order 2 (20 units)
+        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(20)));
+
+        // Modify Order 1 UP from 10 to 15 units (loses priority, moves to back behind Order 2)
+        let (modified, _) = book.modify_order(OrderId(1), None, Quantity(15)).unwrap();
+        assert_eq!(modified.leaves_quantity, Quantity(15));
+
+        // Submit crossing sell for 10 units:
+        // Order 2 must match FIRST because Order 1 lost priority!
+        let res = book.place_order(Order::new_limit(OrderId(3), Side::Sell, Price(100), Quantity(10)));
+        if let OrderPlacementResult::Accepted { trades, .. } = res {
+            assert_eq!(trades.len(), 1);
+            assert_eq!(trades[0].maker_order_id, OrderId(2)); // Order 2 was head of queue!
+            assert_eq!(trades[0].quantity, Quantity(10));
+        } else {
+            panic!("Expected order to match");
+        }
     }
 
     #[test]

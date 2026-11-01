@@ -15,6 +15,7 @@ pub const WAL_MAGIC: [u8; 8] = *b"MEWAL001";
 pub enum WalCommandType {
     PlaceOrder = 1,
     CancelOrder = 2,
+    ModifyOrder = 3,
 }
 
 /// Fixed-size binary representation of an engine command for zero-allocation logging.
@@ -53,6 +54,19 @@ impl WalRecord {
                 0,
                 0,
                 0,
+            ),
+            EngineCommand::ModifyOrder {
+                order_id,
+                new_price,
+                new_quantity,
+            } => (
+                WalCommandType::ModifyOrder as u8,
+                order_id.0,
+                0,
+                0,
+                0,
+                new_price.map_or(0, |p| p.0),
+                new_quantity.0,
             ),
             EngineCommand::Shutdown => return None,
         };
@@ -119,6 +133,12 @@ impl WalRecord {
             )))
         } else if self.command_type == WalCommandType::CancelOrder as u8 {
             Ok(EngineCommand::CancelOrder(OrderId(self.order_id)))
+        } else if self.command_type == WalCommandType::ModifyOrder as u8 {
+            Ok(EngineCommand::ModifyOrder {
+                order_id: OrderId(self.order_id),
+                new_price: if self.price > 0 { Some(Price(self.price)) } else { None },
+                new_quantity: Quantity(self.quantity),
+            })
         } else {
             Err("Unknown command type in WAL")
         }
@@ -211,6 +231,14 @@ impl WalReader {
                             }
                             EngineCommand::CancelOrder(id) => {
                                 book.cancel_order(id);
+                                last_seq = record.sequence_id;
+                            }
+                            EngineCommand::ModifyOrder {
+                                order_id,
+                                new_price,
+                                new_quantity,
+                            } => {
+                                let _ = book.modify_order(order_id, new_price, new_quantity);
                                 last_seq = record.sequence_id;
                             }
                             EngineCommand::Shutdown => {}

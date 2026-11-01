@@ -2,13 +2,18 @@
 
 use crate::orderbook::{OrderBook, OrderPlacementResult};
 use crate::ring_buffer::{Consumer, Producer};
-use crate::types::{Order, OrderId, Trade};
+use crate::types::{Order, OrderId, Price, Quantity, Trade};
 
 /// Inbound command processed by the matching engine loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineCommand {
     PlaceOrder(Order),
     CancelOrder(OrderId),
+    ModifyOrder {
+        order_id: OrderId,
+        new_price: Option<Price>,
+        new_quantity: Quantity,
+    },
     Shutdown,
 }
 
@@ -18,6 +23,11 @@ pub enum EngineEvent {
     OrderAccepted {
         order_id: OrderId,
         resting: bool,
+    },
+    OrderModified {
+        order_id: OrderId,
+        new_price: Price,
+        new_quantity: Quantity,
     },
     TradeExecuted(Trade),
     OrderCancelled {
@@ -102,6 +112,33 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
                                 reason: "Order not found for cancellation",
                             },
                         );
+                    }
+                }
+                EngineCommand::ModifyOrder {
+                    order_id,
+                    new_price,
+                    new_quantity,
+                } => {
+                    match book.modify_order(order_id, new_price, new_quantity) {
+                        Ok((modified_order, trades)) => {
+                            for trade in trades {
+                                push_event_spinning(&mut event_producer, EngineEvent::TradeExecuted(trade));
+                            }
+                            push_event_spinning(
+                                &mut event_producer,
+                                EngineEvent::OrderModified {
+                                    order_id,
+                                    new_price: modified_order.price,
+                                    new_quantity: modified_order.leaves_quantity,
+                                },
+                            );
+                        }
+                        Err(reason) => {
+                            push_event_spinning(
+                                &mut event_producer,
+                                EngineEvent::OrderRejected { order_id, reason },
+                            );
+                        }
                     }
                 }
                 EngineCommand::Shutdown => {

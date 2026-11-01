@@ -53,6 +53,7 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
   - **Outbound**: Strict monotonic sequence IDs (`sequence_id`) enabling downstream Kafka producers and OMS replicas to achieve Exactly-Once processing.
 - **Order Types & Execution Policies**:
   - `Limit` and `Market` orders.
+  - **Cancel-Replace / Amend (`OrderModify`)**: In-place $O(1)$ quantity decrease retaining FIFO priority; atomic re-queueing for size increases or price amendments.
   - Time-In-Force: `GTC` (Good 'Til Cancel), `IOC` (Immediate-Or-Cancel), `FOK` (Fill-Or-Kill), and `PostOnly` (Maker-Only).
   - First-class support for partial fills.
 
@@ -172,7 +173,7 @@ Sent by the OMS to port `9001`:
 | 8 | `price` | `u64` | Limit price in tick units |
 | 16 | `quantity` | `u64` | Order size in lot units |
 | 24 | `correlation_id` | `u64` | Client tracking ID echoed in responses |
-| 32 | `msg_type` | `u8` | `1` = PlaceOrder, `2` = CancelOrder, `255` = Shutdown |
+| 32 | `msg_type` | `u8` | `1` = PlaceOrder, `2` = CancelOrder, `3` = ModifyOrder, `255` = Shutdown |
 | 33 | `side` | `u8` | `0` = Buy, `1` = Sell |
 | 34 | `order_type` | `u8` | `0` = Limit, `1` = Market |
 | 35 | `time_in_force` | `u8` | `0` = GTC, `1` = IOC, `2` = FOK, `3` = PostOnly |
@@ -190,5 +191,5 @@ Streamed to connected translators/subscribers on port `9002`:
 | 32 | `price` | `u64` | Execution / order price in ticks |
 | 40 | `quantity` | `u64` | Executed quantity / new total quantity |
 | 48 | `leaves_quantity` | `u64` | Remaining unfilled quantity |
-| 56 | `event_type` | `u8` | `1` = Accepted, `2` = Trade, `3` = Cancelled, `4` = Rejected, `5` = L2Update, `255` = Shutdown |
+| 56 | `event_type` | `u8` | `1` = Accepted, `2` = Trade, `3` = Cancelled, `4` = Rejected, `5` = L2Update, `6` = Modified, `255` = Shutdown |
 | 57 | `_padding` | `[u8; 7]` | 8-byte natural alignment |

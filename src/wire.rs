@@ -49,6 +49,20 @@ impl WireCommandFrame {
         }
     }
 
+    pub fn new_modify(order_id: u64, new_price: u64, new_quantity: u64, correlation_id: u64) -> Self {
+        Self {
+            order_id,
+            price: new_price,
+            quantity: new_quantity,
+            correlation_id,
+            msg_type: 3,
+            side: 0,
+            order_type: 0,
+            time_in_force: 0,
+            _padding: [0; 4],
+        }
+    }
+
     pub fn new_shutdown() -> Self {
         Self {
             order_id: 0,
@@ -94,6 +108,11 @@ impl WireCommandFrame {
                 )))
             }
             2 => Ok(EngineCommand::CancelOrder(OrderId(self.order_id))),
+            3 => Ok(EngineCommand::ModifyOrder {
+                order_id: OrderId(self.order_id),
+                new_price: if self.price > 0 { Some(Price(self.price)) } else { None },
+                new_quantity: Quantity(self.quantity),
+            }),
             255 => Ok(EngineCommand::Shutdown),
             _ => Err("Unknown message type"),
         }
@@ -171,6 +190,21 @@ impl WireEventFrame {
                 quantity: 0,
                 leaves_quantity: 0,
                 event_type: 3,
+                _padding: [0; 7],
+            },
+            EngineEvent::OrderModified {
+                order_id,
+                new_price,
+                new_quantity,
+            } => Self {
+                sequence_id: seq,
+                timestamp_ns: ts_ns,
+                order_id: order_id.0,
+                maker_order_id: 0,
+                price: new_price.0,
+                quantity: new_quantity.0,
+                leaves_quantity: new_quantity.0,
+                event_type: 6, // 6 = OrderModified
                 _padding: [0; 7],
             },
             EngineEvent::OrderRejected { order_id, .. } => Self {
