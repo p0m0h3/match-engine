@@ -2,6 +2,7 @@ pub mod arena;
 pub mod dedup;
 pub mod engine;
 pub mod gateway;
+pub mod latency;
 pub mod market_data;
 pub mod orderbook;
 pub mod ring_buffer;
