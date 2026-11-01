@@ -13,13 +13,13 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 | Metric | Latency | Time in Microseconds |
 |---|---|---|
 | **Min Latency** | **125 ns** | **0.125 µs** |
-| **P50 (Median)** | **291 ns** | **0.291 µs** |
-| **Mean Latency** | **297 ns** | **0.297 µs** |
+| **P50 (Median)** | **250 ns** | **0.250 µs** |
+| **Mean Latency** | **283.6 ns** | **0.284 µs** |
 | **P90** | **375 ns** | **0.375 µs** |
 | **P99** | **500 ns** | **0.500 µs** |
-| **P99.9** | **2,458 ns** | **2.458 µs** |
+| **P99.9** | **2,291 ns** | **2.291 µs** |
 
-> **Key takeaway**: **99% of all trades execute in $\le$ 500 nanoseconds** end-to-end across threads, with a median latency of **291 nanoseconds**.
+> **Key takeaway**: **99% of all trades execute in $\le$ 500 nanoseconds** end-to-end across threads, with a median latency of **250 nanoseconds** (sub-microsecond execution path).
 
 ### Micro-Benchmark Summary (Criterion)
 
