@@ -8,6 +8,7 @@ rustc-hash = "2.1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.17"
 
 [[bench]]
 name = "orderbook_bench"
