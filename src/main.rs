@@ -33,9 +33,10 @@ fn main() {
     println!(" [Outbound Stream]     Listening on {} (Events)", out_addr);
 
     // 3. Start Core Matching Engine Thread (Single-Writer)
+    let r_engine = Arc::clone(&running);
     let engine_handle = thread::spawn(move || {
         println!(" [Engine Core]         Single-writer matching loop pinned and running.");
-        run_matching_engine_loop(engine_cmd_consumer, engine_event_producer);
+        run_matching_engine_loop(engine_cmd_consumer, engine_event_producer, r_engine);
         println!(" [Engine Core]         Matching loop terminated.");
     });
 

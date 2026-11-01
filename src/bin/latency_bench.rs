@@ -18,9 +18,12 @@ fn main() {
     let freq = hardware_timer_frequency_hz();
     println!("Hardware Timer Frequency: {:.2} MHz", freq as f64 / 1_000_000.0);
 
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r_engine = std::sync::Arc::clone(&running);
+
     // Spawn matching engine on dedicated thread
     let engine_handle = thread::spawn(move || {
-        run_matching_engine_loop(engine_cmd_consumer, engine_event_producer);
+        run_matching_engine_loop(engine_cmd_consumer, engine_event_producer, r_engine);
     });
 
     let mut histogram = LatencyHistogram::new();

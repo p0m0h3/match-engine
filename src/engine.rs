@@ -35,11 +35,12 @@ pub enum EngineEvent {
 pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
     mut cmd_consumer: Consumer<EngineCommand, IN_SIZE>,
     mut event_producer: Producer<EngineEvent, OUT_SIZE>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut book = OrderBook::new();
     let mut dedup_filter = crate::dedup::SlidingDedupFilter::with_capacity(65_536);
 
-    loop {
+    while running.load(std::sync::atomic::Ordering::Relaxed) {
         // Poll non-blocking from inbound lock-free ring buffer
         if let Some(cmd) = cmd_consumer.try_pop() {
             match cmd {
@@ -142,9 +143,12 @@ mod tests {
         let (mut cmd_producer, cmd_consumer) = spsc_channel::<EngineCommand, QUEUE_CAPACITY>();
         let (event_producer, mut event_consumer) = spsc_channel::<EngineEvent, QUEUE_CAPACITY>();
 
+        let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let r_engine = std::sync::Arc::clone(&running);
+
         // Spawn the dedicated matching thread
         let engine_handle = thread::spawn(move || {
-            run_matching_engine_loop(cmd_consumer, event_producer);
+            run_matching_engine_loop(cmd_consumer, event_producer, r_engine);
         });
 
         // Seed resting ask

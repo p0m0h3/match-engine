@@ -26,8 +26,9 @@ fn main() {
     let in_handle = start_inbound_gateway(in_addr, inbound_producer, Arc::clone(&running));
     let out_handle = start_outbound_broadcaster(out_addr, outbound_consumer, Arc::clone(&running));
 
+    let r_engine = Arc::clone(&running);
     let engine_handle = thread::spawn(move || {
-        run_matching_engine_loop(engine_cmd_consumer, engine_event_producer);
+        run_matching_engine_loop(engine_cmd_consumer, engine_event_producer, r_engine);
     });
 
     thread::sleep(Duration::from_millis(50));
