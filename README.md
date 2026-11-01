@@ -71,8 +71,9 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   └── notes/                     # Architecture Decision Records (001 to 029)
 ├── src/
 │   ├── bin/
-│   │   ├── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
-│   │   └── kafka_adapter.rs       # Idempotent Kafka bridge adapter demonstration
+│   │   ├── demo_simulation.rs     # Scripted mock end-to-end simulation
+│   │   ├── kafka_adapter.rs       # Idempotent Kafka bridge adapter demonstration
+│   │   └── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
 │   ├── arena.rs                   # Pre-allocated slot pool & intrusive doubly-linked list
 │   ├── dedup.rs                   # Zero-allocation sliding deduplication filter
 │   ├── engine.rs                  # Single-writer matching engine event loop
@@ -105,12 +106,20 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 cargo build --release
 ```
 
-### Run the Demo Binary
+### Run the Matching Engine Daemon
 
-Runs an end-to-end simulation: boots the dual-port gateway, connects a simulated Kafka translator, connects an external OMS client over TCP, executes crossing trades, and shuts down cleanly:
+Runs the continuous server listening on ports `9001` (Inbound Orders) and `9002` (Outbound Events) until stopped via `Ctrl+C`:
 
 ```bash
-cargo run
+cargo run --release
+```
+
+### Run the Self-Test Mock Simulation
+
+Runs a complete scripted end-to-end simulation across local TCP sockets and shuts down cleanly:
+
+```bash
+cargo run --bin demo_simulation
 ```
 
 ### Run the Live Hardware Tick-to-Trade Profiler
