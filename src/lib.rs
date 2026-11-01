@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod engine;
 pub mod gateway;
+pub mod market_data;
 pub mod orderbook;
 pub mod ring_buffer;
 pub mod types;

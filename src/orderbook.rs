@@ -56,6 +56,29 @@ impl OrderBook {
         self.asks.first_key_value().map(|(p, _)| *p)
     }
 
+    /// Generate an L2 Market Depth snapshot of the top N price levels with zero heap allocation.
+    pub fn get_l2_snapshot<const DEPTH: usize>(&self) -> crate::market_data::L2Snapshot<DEPTH> {
+        let mut snapshot = crate::market_data::L2Snapshot::<DEPTH>::default();
+
+        for (rev_price, queue) in self.bids.iter().take(DEPTH) {
+            snapshot.bids[snapshot.bid_count] = crate::market_data::DepthLevel::new(
+                rev_price.0,
+                Quantity(queue.total_quantity),
+            );
+            snapshot.bid_count += 1;
+        }
+
+        for (price, queue) in self.asks.iter().take(DEPTH) {
+            snapshot.asks[snapshot.ask_count] = crate::market_data::DepthLevel::new(
+                *price,
+                Quantity(queue.total_quantity),
+            );
+            snapshot.ask_count += 1;
+        }
+
+        snapshot
+    }
+
     /// Process an order in FIFO price-time priority.
     pub fn place_order(&mut self, mut order: Order) -> OrderPlacementResult {
         // 1. Post-Only check
@@ -291,6 +314,35 @@ impl OrderBook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_l2_snapshot_aggregation() {
+        let mut book = OrderBook::new();
+
+        // Add 3 resting bids across 2 price levels
+        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(25)));
+        book.place_order(Order::new_limit(OrderId(3), Side::Buy, Price(99), Quantity(15)));
+
+        // Add 2 resting asks across 2 price levels
+        book.place_order(Order::new_limit(OrderId(4), Side::Sell, Price(101), Quantity(5)));
+        book.place_order(Order::new_limit(OrderId(5), Side::Sell, Price(102), Quantity(40)));
+
+        // Query top-5 L2 snapshot
+        let snapshot = book.get_l2_snapshot::<5>();
+
+        assert_eq!(snapshot.bid_count, 2);
+        assert_eq!(snapshot.bids[0].price, Price(100));
+        assert_eq!(snapshot.bids[0].total_quantity, Quantity(35)); // 10 + 25
+        assert_eq!(snapshot.bids[1].price, Price(99));
+        assert_eq!(snapshot.bids[1].total_quantity, Quantity(15));
+
+        assert_eq!(snapshot.ask_count, 2);
+        assert_eq!(snapshot.asks[0].price, Price(101));
+        assert_eq!(snapshot.asks[0].total_quantity, Quantity(5));
+        assert_eq!(snapshot.asks[1].price, Price(102));
+        assert_eq!(snapshot.asks[1].total_quantity, Quantity(40));
+    }
 
     #[test]
     fn test_partial_fill_fifo_queue() {

@@ -184,6 +184,17 @@ impl WireEventFrame {
                 event_type: 4,
                 _padding: [0; 7],
             },
+            EngineEvent::L2Update(delta) => Self {
+                sequence_id: seq,
+                timestamp_ns: ts_ns,
+                order_id: 0,
+                maker_order_id: delta.side as u64,
+                price: delta.price.0,
+                quantity: delta.new_total_quantity.0,
+                leaves_quantity: 0,
+                event_type: 5, // 5 = L2 Update
+                _padding: [0; 7],
+            },
             EngineEvent::EngineShutdown => Self {
                 sequence_id: seq,
                 timestamp_ns: ts_ns,

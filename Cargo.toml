@@ -17,3 +17,7 @@ harness = false
 [[bench]]
 name = "cancellation_scaling"
 harness = false
+
+[[bench]]
+name = "l2_depth_bench"
+harness = false

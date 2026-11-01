@@ -27,6 +27,7 @@ pub enum EngineEvent {
         order_id: OrderId,
         reason: &'static str,
     },
+    L2Update(crate::market_data::L2DeltaUpdate),
     EngineShutdown,
 }
 
