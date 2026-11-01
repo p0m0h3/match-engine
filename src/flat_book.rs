@@ -140,6 +140,52 @@ impl<const CAPACITY: usize> FlatTickBook<CAPACITY> {
         }
         None
     }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.occupied_bitmap.iter().all(|&w| w == 0)
+    }
+
+    /// Iterator yielding occupied (Price, &PriceLevelQueue) in ascending order.
+    pub fn iter_ascending(&self) -> impl Iterator<Item = (Price, &PriceLevelQueue)> {
+        self.occupied_bitmap
+            .iter()
+            .enumerate()
+            .flat_map(move |(word_idx, &word)| {
+                let mut w = word;
+                std::iter::from_fn(move || {
+                    if w == 0 {
+                        None
+                    } else {
+                        let tz = w.trailing_zeros();
+                        w &= w - 1; // Clear lowest bit
+                        let level_idx = word_idx * 64 + tz as usize;
+                        let price = self.index_to_price(level_idx);
+                        Some((price, &self.levels[level_idx]))
+                    }
+                })
+            })
+    }
+
+    /// Iterator yielding occupied (Price, &PriceLevelQueue) in descending order.
+    pub fn iter_descending(&self) -> impl Iterator<Item = (Price, &PriceLevelQueue)> {
+        let bitmap_len = self.occupied_bitmap.len();
+        (0..bitmap_len).rev().flat_map(move |word_idx| {
+            let mut w = self.occupied_bitmap[word_idx];
+            std::iter::from_fn(move || {
+                if w == 0 {
+                    None
+                } else {
+                    let lz = w.leading_zeros();
+                    let bit_offset = 63 - lz;
+                    w &= !(1u64 << bit_offset); // Clear highest bit
+                    let level_idx = word_idx * 64 + bit_offset as usize;
+                    let price = self.index_to_price(level_idx);
+                    Some((price, &self.levels[level_idx]))
+                }
+            })
+        })
+    }
 }
 
 #[cfg(test)]

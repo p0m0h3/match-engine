@@ -279,7 +279,8 @@ mod tests {
         assert_eq!(recovered_book.best_bid(), Some(Price(90)));
 
         // Verify remaining volume in the price level
-        let ask_queue = recovered_book.asks.get(&Price(100)).unwrap();
-        assert_eq!(ask_queue.total_quantity, 30);
+        let l2 = recovered_book.get_l2_snapshot::<1>();
+        assert_eq!(l2.asks[0].price, Price(100));
+        assert_eq!(l2.asks[0].total_quantity, Quantity(30));
     }
 }

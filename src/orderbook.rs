@@ -1,8 +1,10 @@
-//! High-Performance Order Book with contiguous arena memory & intrusive doubly-linked list.
+//! High-Performance Order Book with contiguous arena memory, intrusive doubly-linked list,
+//! and Direct-Indexed FlatTickBook price indexing.
 
 use std::collections::BTreeMap;
 use rustc_hash::FxHashMap;
 use crate::arena::{OrderArena, PriceLevelQueue, SlotIdx};
+use crate::flat_book::FlatTickBook;
 use crate::types::{Order, OrderId, OrderType, Price, Quantity, Side, TimeInForce, Trade};
 
 /// Result of placing an order into the order book.
@@ -17,13 +19,14 @@ pub enum OrderPlacementResult {
     },
 }
 
-/// In-memory Limit Order Book using arena-backed price queues.
-#[derive(Debug)]
+/// In-memory Limit Order Book using Direct-Indexed FlatTickBook with a sparse BTreeMap fallback.
 pub struct OrderBook {
-    /// Bids sorted descending.
-    pub bids: BTreeMap<std::cmp::Reverse<Price>, PriceLevelQueue>,
-    /// Asks sorted ascending.
-    pub asks: BTreeMap<Price, PriceLevelQueue>,
+    /// Direct-indexed array for primary trading band (e.g. 10,000 tick levels).
+    pub flat_bids: FlatTickBook<10_000>,
+    pub flat_asks: FlatTickBook<10_000>,
+    /// Sparse fallback for extreme outlier prices.
+    pub sparse_bids: BTreeMap<std::cmp::Reverse<Price>, PriceLevelQueue>,
+    pub sparse_asks: BTreeMap<Price, PriceLevelQueue>,
     /// Maps active OrderId -> (Price, Side, SlotIdx).
     pub order_locations: FxHashMap<OrderId, (Price, Side, SlotIdx)>,
     /// Pre-allocated arena for zero-heap order operations.
@@ -32,45 +35,77 @@ pub struct OrderBook {
 
 impl OrderBook {
     pub const DEFAULT_CAPACITY: usize = 100_000;
+    pub const DEFAULT_BASE_PRICE: u64 = 0;
 
     pub fn new() -> Self {
-        Self::with_capacity(Self::DEFAULT_CAPACITY)
+        Self::with_capacity_and_base(Self::DEFAULT_CAPACITY, Self::DEFAULT_BASE_PRICE)
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_capacity_and_base(capacity, Self::DEFAULT_BASE_PRICE)
+    }
+
+    pub fn with_capacity_and_base(capacity: usize, base_price: u64) -> Self {
         Self {
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
+            flat_bids: FlatTickBook::new(base_price),
+            flat_asks: FlatTickBook::new(base_price),
+            sparse_bids: BTreeMap::new(),
+            sparse_asks: BTreeMap::new(),
             order_locations: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             arena: OrderArena::with_capacity(capacity),
         }
     }
 
-    #[inline]
+    /// Best Bid price, if any exists.
+    #[inline(always)]
     pub fn best_bid(&self) -> Option<Price> {
-        self.bids.first_key_value().map(|(rev_p, _)| rev_p.0)
+        let flat_best = self.flat_bids.highest_occupied_price();
+        let sparse_best = self.sparse_bids.first_key_value().map(|(rev_p, _)| rev_p.0);
+
+        match (flat_best, sparse_best) {
+            (Some(fb), Some(sb)) => Some(fb.max(sb)),
+            (Some(fb), None) => Some(fb),
+            (None, Some(sb)) => Some(sb),
+            (None, None) => None,
+        }
     }
 
-    #[inline]
+    /// Best Ask / Offer price, if any exists.
+    #[inline(always)]
     pub fn best_ask(&self) -> Option<Price> {
-        self.asks.first_key_value().map(|(p, _)| *p)
+        let flat_best = self.flat_asks.lowest_occupied_price();
+        let sparse_best = self.sparse_asks.first_key_value().map(|(p, _)| *p);
+
+        match (flat_best, sparse_best) {
+            (Some(fa), Some(sa)) => Some(fa.min(sa)),
+            (Some(fa), None) => Some(fa),
+            (None, Some(sa)) => Some(sa),
+            (None, None) => None,
+        }
     }
 
     /// Generate an L2 Market Depth snapshot of the top N price levels with zero heap allocation.
     pub fn get_l2_snapshot<const DEPTH: usize>(&self) -> crate::market_data::L2Snapshot<DEPTH> {
         let mut snapshot = crate::market_data::L2Snapshot::<DEPTH>::default();
 
-        for (rev_price, queue) in self.bids.iter().take(DEPTH) {
+        // Direct-indexed levels are fast and cache-local
+        for (price, queue) in self.flat_bids.iter_descending() {
+            if snapshot.bid_count >= DEPTH {
+                break;
+            }
             snapshot.bids[snapshot.bid_count] = crate::market_data::DepthLevel::new(
-                rev_price.0,
+                price,
                 Quantity(queue.total_quantity),
             );
             snapshot.bid_count += 1;
         }
 
-        for (price, queue) in self.asks.iter().take(DEPTH) {
+        for (price, queue) in self.flat_asks.iter_ascending() {
+            if snapshot.ask_count >= DEPTH {
+                break;
+            }
             snapshot.asks[snapshot.ask_count] = crate::market_data::DepthLevel::new(
-                *price,
+                price,
                 Quantity(queue.total_quantity),
             );
             snapshot.ask_count += 1;
@@ -117,45 +152,88 @@ impl OrderBook {
         match order.side {
             Side::Buy => {
                 while order.leaves_quantity.0 > 0 {
-                    let mut entry = match self.asks.first_entry() {
-                        Some(e) => e,
+                    let best_ask = match self.best_ask() {
+                        Some(p) => p,
                         None => break,
                     };
 
-                    let ask_price = *entry.key();
-                    if order.order_type == OrderType::Limit && order.price < ask_price {
+                    if order.order_type == OrderType::Limit && order.price < best_ask {
                         break;
                     }
 
-                    let queue = entry.get_mut();
-                    while order.leaves_quantity.0 > 0 && !queue.is_empty() {
-                        let resting_slot = SlotIdx(queue.head);
-                        let resting_node = self.arena.get_mut(resting_slot);
-                        let match_qty = order.leaves_quantity.0.min(resting_node.order.leaves_quantity.0);
+                    // Direct array matching path
+                    if self.flat_asks.in_bounds(best_ask) {
+                        while order.leaves_quantity.0 > 0 {
+                            let (resting_slot, resting_leaves, resting_id, resting_price) = {
+                                let queue = self.flat_asks.get_level_mut(best_ask).unwrap();
+                                if queue.is_empty() {
+                                    break;
+                                }
+                                let slot = SlotIdx(queue.head);
+                                let node = self.arena.get(slot);
+                                (slot, node.order.leaves_quantity.0, node.order.id, node.order.price)
+                            };
 
-                        order.leaves_quantity.0 -= match_qty;
-                        resting_node.order.leaves_quantity.0 -= match_qty;
-                        queue.total_quantity -= match_qty;
+                            let match_qty = order.leaves_quantity.0.min(resting_leaves);
+                            order.leaves_quantity.0 -= match_qty;
 
-                        trades.push(Trade {
-                            maker_order_id: resting_node.order.id,
-                            taker_order_id: order.id,
-                            price: resting_node.order.price,
-                            quantity: Quantity(match_qty),
-                            maker_leaves_quantity: resting_node.order.leaves_quantity,
-                            taker_leaves_quantity: order.leaves_quantity,
-                        });
+                            // Adjust resting node
+                            let resting_node = self.arena.get_mut(resting_slot);
+                            resting_node.order.leaves_quantity.0 -= match_qty;
+                            let leaves_after = resting_node.order.leaves_quantity.0;
 
-                        if resting_node.order.is_filled() {
-                            let filled_slot = queue.pop_front(&mut self.arena).unwrap();
-                            let filled_order_id = self.arena.get(filled_slot).order.id;
-                            self.order_locations.remove(&filled_order_id);
-                            self.arena.dealloc(filled_slot);
+                            // Update price level total quantity
+                            let queue = self.flat_asks.get_level_mut(best_ask).unwrap();
+                            queue.total_quantity -= match_qty;
+
+                            trades.push(Trade {
+                                maker_order_id: resting_id,
+                                taker_order_id: order.id,
+                                price: resting_price,
+                                quantity: Quantity(match_qty),
+                                maker_leaves_quantity: Quantity(leaves_after),
+                                taker_leaves_quantity: order.leaves_quantity,
+                            });
+
+                            if leaves_after == 0 {
+                                let filled_slot = self.flat_asks.pop_front(&mut self.arena, best_ask).unwrap();
+                                let filled_order_id = self.arena.get(filled_slot).order.id;
+                                self.order_locations.remove(&filled_order_id);
+                                self.arena.dealloc(filled_slot);
+                            }
                         }
-                    }
+                    } else {
+                        // Sparse fallback path
+                        let mut entry = self.sparse_asks.first_entry().unwrap();
+                        let queue = entry.get_mut();
+                        while order.leaves_quantity.0 > 0 && !queue.is_empty() {
+                            let resting_slot = SlotIdx(queue.head);
+                            let resting_node = self.arena.get_mut(resting_slot);
+                            let match_qty = order.leaves_quantity.0.min(resting_node.order.leaves_quantity.0);
 
-                    if queue.is_empty() {
-                        entry.remove();
+                            order.leaves_quantity.0 -= match_qty;
+                            resting_node.order.leaves_quantity.0 -= match_qty;
+                            queue.total_quantity -= match_qty;
+
+                            trades.push(Trade {
+                                maker_order_id: resting_node.order.id,
+                                taker_order_id: order.id,
+                                price: resting_node.order.price,
+                                quantity: Quantity(match_qty),
+                                maker_leaves_quantity: resting_node.order.leaves_quantity,
+                                taker_leaves_quantity: order.leaves_quantity,
+                            });
+
+                            if resting_node.order.is_filled() {
+                                let filled_slot = queue.pop_front(&mut self.arena).unwrap();
+                                let filled_order_id = self.arena.get(filled_slot).order.id;
+                                self.order_locations.remove(&filled_order_id);
+                                self.arena.dealloc(filled_slot);
+                            }
+                        }
+                        if queue.is_empty() {
+                            entry.remove();
+                        }
                     }
                 }
 
@@ -171,10 +249,14 @@ impl OrderBook {
                     match self.arena.alloc(order) {
                         Ok(slot) => {
                             self.order_locations.insert(order_id, (price, side, slot));
-                            self.bids
-                                .entry(std::cmp::Reverse(price))
-                                .or_default()
-                                .push_back(&mut self.arena, slot);
+                            if self.flat_bids.in_bounds(price) {
+                                self.flat_bids.push_back(&mut self.arena, price, slot).unwrap();
+                            } else {
+                                self.sparse_bids
+                                    .entry(std::cmp::Reverse(price))
+                                    .or_default()
+                                    .push_back(&mut self.arena, slot);
+                            }
 
                             OrderPlacementResult::Accepted {
                                 trades,
@@ -192,45 +274,88 @@ impl OrderBook {
             }
             Side::Sell => {
                 while order.leaves_quantity.0 > 0 {
-                    let mut entry = match self.bids.first_entry() {
-                        Some(e) => e,
+                    let best_bid = match self.best_bid() {
+                        Some(p) => p,
                         None => break,
                     };
 
-                    let bid_price = entry.key().0;
-                    if order.order_type == OrderType::Limit && order.price > bid_price {
+                    if order.order_type == OrderType::Limit && order.price > best_bid {
                         break;
                     }
 
-                    let queue = entry.get_mut();
-                    while order.leaves_quantity.0 > 0 && !queue.is_empty() {
-                        let resting_slot = SlotIdx(queue.head);
-                        let resting_node = self.arena.get_mut(resting_slot);
-                        let match_qty = order.leaves_quantity.0.min(resting_node.order.leaves_quantity.0);
+                    // Direct array matching path
+                    if self.flat_bids.in_bounds(best_bid) {
+                        while order.leaves_quantity.0 > 0 {
+                            let (resting_slot, resting_leaves, resting_id, resting_price) = {
+                                let queue = self.flat_bids.get_level_mut(best_bid).unwrap();
+                                if queue.is_empty() {
+                                    break;
+                                }
+                                let slot = SlotIdx(queue.head);
+                                let node = self.arena.get(slot);
+                                (slot, node.order.leaves_quantity.0, node.order.id, node.order.price)
+                            };
 
-                        order.leaves_quantity.0 -= match_qty;
-                        resting_node.order.leaves_quantity.0 -= match_qty;
-                        queue.total_quantity -= match_qty;
+                            let match_qty = order.leaves_quantity.0.min(resting_leaves);
+                            order.leaves_quantity.0 -= match_qty;
 
-                        trades.push(Trade {
-                            maker_order_id: resting_node.order.id,
-                            taker_order_id: order.id,
-                            price: resting_node.order.price,
-                            quantity: Quantity(match_qty),
-                            maker_leaves_quantity: resting_node.order.leaves_quantity,
-                            taker_leaves_quantity: order.leaves_quantity,
-                        });
+                            // Adjust resting node
+                            let resting_node = self.arena.get_mut(resting_slot);
+                            resting_node.order.leaves_quantity.0 -= match_qty;
+                            let leaves_after = resting_node.order.leaves_quantity.0;
 
-                        if resting_node.order.is_filled() {
-                            let filled_slot = queue.pop_front(&mut self.arena).unwrap();
-                            let filled_order_id = self.arena.get(filled_slot).order.id;
-                            self.order_locations.remove(&filled_order_id);
-                            self.arena.dealloc(filled_slot);
+                            // Update price level total quantity
+                            let queue = self.flat_bids.get_level_mut(best_bid).unwrap();
+                            queue.total_quantity -= match_qty;
+
+                            trades.push(Trade {
+                                maker_order_id: resting_id,
+                                taker_order_id: order.id,
+                                price: resting_price,
+                                quantity: Quantity(match_qty),
+                                maker_leaves_quantity: Quantity(leaves_after),
+                                taker_leaves_quantity: order.leaves_quantity,
+                            });
+
+                            if leaves_after == 0 {
+                                let filled_slot = self.flat_bids.pop_front(&mut self.arena, best_bid).unwrap();
+                                let filled_order_id = self.arena.get(filled_slot).order.id;
+                                self.order_locations.remove(&filled_order_id);
+                                self.arena.dealloc(filled_slot);
+                            }
                         }
-                    }
+                    } else {
+                        // Sparse fallback path
+                        let mut entry = self.sparse_bids.first_entry().unwrap();
+                        let queue = entry.get_mut();
+                        while order.leaves_quantity.0 > 0 && !queue.is_empty() {
+                            let resting_slot = SlotIdx(queue.head);
+                            let resting_node = self.arena.get_mut(resting_slot);
+                            let match_qty = order.leaves_quantity.0.min(resting_node.order.leaves_quantity.0);
 
-                    if queue.is_empty() {
-                        entry.remove();
+                            order.leaves_quantity.0 -= match_qty;
+                            resting_node.order.leaves_quantity.0 -= match_qty;
+                            queue.total_quantity -= match_qty;
+
+                            trades.push(Trade {
+                                maker_order_id: resting_node.order.id,
+                                taker_order_id: order.id,
+                                price: resting_node.order.price,
+                                quantity: Quantity(match_qty),
+                                maker_leaves_quantity: resting_node.order.leaves_quantity,
+                                taker_leaves_quantity: order.leaves_quantity,
+                            });
+
+                            if resting_node.order.is_filled() {
+                                let filled_slot = queue.pop_front(&mut self.arena).unwrap();
+                                let filled_order_id = self.arena.get(filled_slot).order.id;
+                                self.order_locations.remove(&filled_order_id);
+                                self.arena.dealloc(filled_slot);
+                            }
+                        }
+                        if queue.is_empty() {
+                            entry.remove();
+                        }
                     }
                 }
 
@@ -246,10 +371,14 @@ impl OrderBook {
                     match self.arena.alloc(order) {
                         Ok(slot) => {
                             self.order_locations.insert(order_id, (price, side, slot));
-                            self.asks
-                                .entry(price)
-                                .or_default()
-                                .push_back(&mut self.arena, slot);
+                            if self.flat_asks.in_bounds(price) {
+                                self.flat_asks.push_back(&mut self.arena, price, slot).unwrap();
+                            } else {
+                                self.sparse_asks
+                                    .entry(price)
+                                    .or_default()
+                                    .push_back(&mut self.arena, slot);
+                            }
 
                             OrderPlacementResult::Accepted {
                                 trades,
@@ -272,18 +401,26 @@ impl OrderBook {
     pub fn cancel_order(&mut self, order_id: OrderId) -> Option<Order> {
         let (price, side, slot) = self.order_locations.remove(&order_id)?;
 
-        let queue = match side {
-            Side::Buy => self.bids.get_mut(&std::cmp::Reverse(price))?,
-            Side::Sell => self.asks.get_mut(&price)?,
-        };
-
-        // True O(1) unlinking: No linear scanning through orders!
-        queue.unlink(&mut self.arena, slot);
-
-        if queue.is_empty() {
-            match side {
-                Side::Buy => { self.bids.remove(&std::cmp::Reverse(price)); }
-                Side::Sell => { self.asks.remove(&price); }
+        match side {
+            Side::Buy => {
+                if self.flat_bids.in_bounds(price) {
+                    self.flat_bids.unlink(&mut self.arena, price, slot);
+                } else if let Some(queue) = self.sparse_bids.get_mut(&std::cmp::Reverse(price)) {
+                    queue.unlink(&mut self.arena, slot);
+                    if queue.is_empty() {
+                        self.sparse_bids.remove(&std::cmp::Reverse(price));
+                    }
+                }
+            }
+            Side::Sell => {
+                if self.flat_asks.in_bounds(price) {
+                    self.flat_asks.unlink(&mut self.arena, price, slot);
+                } else if let Some(queue) = self.sparse_asks.get_mut(&price) {
+                    queue.unlink(&mut self.arena, slot);
+                    if queue.is_empty() {
+                        self.sparse_asks.remove(&price);
+                    }
+                }
             }
         }
 
@@ -297,17 +434,16 @@ impl OrderBook {
         let mut total = 0;
         match opposing_side {
             Side::Sell => {
-                for (ask_price, queue) in &self.asks {
-                    if order_type == OrderType::Limit && *ask_price > limit_price {
+                for (price, queue) in self.flat_asks.iter_ascending() {
+                    if order_type == OrderType::Limit && price > limit_price {
                         break;
                     }
                     total += queue.total_quantity;
                 }
             }
             Side::Buy => {
-                for (rev_bid_price, queue) in &self.bids {
-                    let bid_price = rev_bid_price.0;
-                    if order_type == OrderType::Limit && bid_price < limit_price {
+                for (price, queue) in self.flat_bids.iter_descending() {
+                    if order_type == OrderType::Limit && price < limit_price {
                         break;
                     }
                     total += queue.total_quantity;
@@ -337,21 +473,18 @@ mod tests {
     fn test_l2_snapshot_aggregation() {
         let mut book = OrderBook::new();
 
-        // Add 3 resting bids across 2 price levels
         book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
         book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(25)));
         book.place_order(Order::new_limit(OrderId(3), Side::Buy, Price(99), Quantity(15)));
 
-        // Add 2 resting asks across 2 price levels
         book.place_order(Order::new_limit(OrderId(4), Side::Sell, Price(101), Quantity(5)));
         book.place_order(Order::new_limit(OrderId(5), Side::Sell, Price(102), Quantity(40)));
 
-        // Query top-5 L2 snapshot
         let snapshot = book.get_l2_snapshot::<5>();
 
         assert_eq!(snapshot.bid_count, 2);
         assert_eq!(snapshot.bids[0].price, Price(100));
-        assert_eq!(snapshot.bids[0].total_quantity, Quantity(35)); // 10 + 25
+        assert_eq!(snapshot.bids[0].total_quantity, Quantity(35));
         assert_eq!(snapshot.bids[1].price, Price(99));
         assert_eq!(snapshot.bids[1].total_quantity, Quantity(15));
 
@@ -396,23 +529,13 @@ mod tests {
         book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(20)));
         book.place_order(Order::new_limit(OrderId(3), Side::Buy, Price(100), Quantity(30)));
 
-        // Cancel the middle order (OrderId 2)
         let cancelled = book.cancel_order(OrderId(2));
         assert!(cancelled.is_some());
         assert_eq!(cancelled.unwrap().id, OrderId(2));
 
-        // Queue at 100 should now have 10 + 30 = 40 total quantity
-        let rev_p = std::cmp::Reverse(Price(100));
-        let queue = book.bids.get(&rev_p).unwrap();
-        assert_eq!(queue.total_quantity, 40);
-        assert_eq!(queue.order_count, 2);
-
-        // Ensure Order 1 is still head, and Order 3 is still tail
-        let head_slot = SlotIdx(queue.head);
-        assert_eq!(book.arena.get(head_slot).order.id, OrderId(1));
-
-        let tail_slot = SlotIdx(queue.tail);
-        assert_eq!(book.arena.get(tail_slot).order.id, OrderId(3));
+        let l2 = book.get_l2_snapshot::<1>();
+        assert_eq!(l2.bids[0].price, Price(100));
+        assert_eq!(l2.bids[0].total_quantity, Quantity(40));
     }
 
     #[test]

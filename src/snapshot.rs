@@ -163,16 +163,24 @@ impl SnapshotManager {
 
             match side {
                 crate::types::Side::Buy => {
-                    book.bids
-                        .entry(std::cmp::Reverse(price))
-                        .or_default()
-                        .push_back(&mut book.arena, slot);
+                    if book.flat_bids.in_bounds(price) {
+                        book.flat_bids.push_back(&mut book.arena, price, slot).unwrap();
+                    } else {
+                        book.sparse_bids
+                            .entry(std::cmp::Reverse(price))
+                            .or_default()
+                            .push_back(&mut book.arena, slot);
+                    }
                 }
                 crate::types::Side::Sell => {
-                    book.asks
-                        .entry(price)
-                        .or_default()
-                        .push_back(&mut book.arena, slot);
+                    if book.flat_asks.in_bounds(price) {
+                        book.flat_asks.push_back(&mut book.arena, price, slot).unwrap();
+                    } else {
+                        book.sparse_asks
+                            .entry(price)
+                            .or_default()
+                            .push_back(&mut book.arena, slot);
+                    }
                 }
             }
         }
