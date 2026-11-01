@@ -2,7 +2,24 @@
 
 An ultra-low latency, deterministic Price-Time Priority (FIFO) market matching engine written in Rust.
 
-Designed following the single-writer architecture (LMAX Disruptor pattern) with zero heap allocations on the hot path, cache-aligned lock-free ring buffers, fixed-size binary wire protocols, Write-Ahead Logging (WAL) with atomic state snapshots, and full end-to-end idempotency.
+Designed following the single-writer architecture (LMAX Disruptor pattern) with zero heap allocations on the hot path, cache-aligned lock-free ring buffers, fixed-size binary wire protocols, Write-Ahead Logging (WAL) with atomic state snapshots, hardware-level CPU timestamping, and full end-to-end idempotency.
+
+---
+
+## Performance Highlights (Live Tick-to-Trade)
+
+Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow$ Single-Writer Match Core $\rightarrow$ FIFO Matching $\rightarrow$ Egress SPSC) using direct hardware CPU cycle counters (`cntvct_el0` on ARM64 / `rdtsc` on x86):
+
+| Metric | Latency | Time in Microseconds |
+|---|---|---|
+| **Min Latency** | **125 ns** | **0.125 µs** |
+| **P50 (Median)** | **333 ns** | **0.333 µs** |
+| **Mean Latency** | **347 ns** | **0.347 µs** |
+| **P90** | **458 ns** | **0.458 µs** |
+| **P99** | **750 ns** | **0.750 µs** |
+| **P99.9** | **2,791 ns** | **2.791 µs** |
+
+> **Key takeaway**: Over **99% of all trades execute in under 750 nanoseconds** end-to-end across threads with minimal tail jitter.
 
 ---
 
@@ -14,6 +31,9 @@ Designed following the single-writer architecture (LMAX Disruptor pattern) with 
   - **Intrusive Doubly-Linked Lists** for price levels, providing true $O(1)$ unlinking for order cancellations (~700 ns) regardless of queue depth.
   - Integer arithmetic for prices and quantities (`u64` tick units, no floating-point rounding errors).
   - Fast non-cryptographic integer hashing (`rustc-hash` / `FxHashMap`).
+- **Hardware-Level Tick-to-Trade Profiler**:
+  - Direct CPU register timestamping (`cntvct_el0` / `_rdtsc`) bypassing OS syscalls (< 2 ns measurement overhead).
+  - Pre-allocated 100,000-bin latency histogram tracking 1 ns to 100 µs percentile distributions.
 - **Single-Writer Event Loop**:
   - Dedicated matching thread runs lock-free and non-blocking, eliminating mutex contention and cache coherency storms.
   - Thread-to-thread communication via cache-line padded (`#[repr(align(64))]`) lock-free Single-Producer Single-Consumer (SPSC) ring buffers.
@@ -46,12 +66,15 @@ Designed following the single-writer architecture (LMAX Disruptor pattern) with 
 │   ├── cancellation_scaling.rs    # Depth scaling benchmark (100 to 5,000 orders)
 │   └── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
 ├── docs/
-│   └── notes/                     # Architecture Decision Records (001 to 024)
+│   └── notes/                     # Architecture Decision Records (001 to 026)
 ├── src/
+│   ├── bin/
+│   │   └── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
 │   ├── arena.rs                   # Pre-allocated slot pool & intrusive doubly-linked list
 │   ├── dedup.rs                   # Zero-allocation sliding deduplication filter
 │   ├── engine.rs                  # Single-writer matching engine event loop
 │   ├── gateway.rs                 # Dual-port TCP gateway (Inbound 9001, Outbound 9002)
+│   ├── latency.rs                 # Direct CPU cycle timer & high-res latency histogram
 │   ├── lib.rs                     # Core library exports
 │   ├── main.rs                    # Executable demo server
 │   ├── market_data.rs             # L2 depth aggregation structures & deltas
@@ -84,6 +107,14 @@ Runs an end-to-end simulation: boots the dual-port gateway, connects a simulated
 
 ```bash
 cargo run
+```
+
+### Run the Live Hardware Tick-to-Trade Profiler
+
+Measures nanosecond-level P50, P90, P99, and P99.9 latencies over 100,000 live cross-thread orders:
+
+```bash
+cargo run --release --bin latency_bench
 ```
 
 ### Run Unit & Integration Tests
