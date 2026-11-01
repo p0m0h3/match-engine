@@ -13,13 +13,13 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 | Metric | Latency | Time in Microseconds |
 |---|---|---|
 | **Min Latency** | **125 ns** | **0.125 µs** |
-| **P50 (Median)** | **333 ns** | **0.333 µs** |
-| **Mean Latency** | **347 ns** | **0.347 µs** |
-| **P90** | **458 ns** | **0.458 µs** |
-| **P99** | **750 ns** | **0.750 µs** |
-| **P99.9** | **2,791 ns** | **2.791 µs** |
+| **P50 (Median)** | **291 ns** | **0.291 µs** |
+| **Mean Latency** | **297 ns** | **0.297 µs** |
+| **P90** | **375 ns** | **0.375 µs** |
+| **P99** | **500 ns** | **0.500 µs** |
+| **P99.9** | **2,458 ns** | **2.458 µs** |
 
-> **Key takeaway**: Over **99% of all trades execute in under 750 nanoseconds** end-to-end across threads with minimal tail jitter.
+> **Key takeaway**: **99% of all trades execute in $\le$ 500 nanoseconds** end-to-end across threads, with a median latency of **291 nanoseconds**.
 
 ---
 
@@ -27,6 +27,7 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 
 - **Price-Time Priority (FIFO)**: Guaranteed primary price priority and secondary arrival-time ordering.
 - **Sub-Microsecond Latency**:
+  - Direct-Indexed **Flat Tick Array** (`FlatTickBook`) with bitset scanning: **3.25 ns** price level lookup and **6.30 ns** BBO search (~4.5x faster than `BTreeMap`).
   - Pre-allocated **contiguous slot arena** with embedded free lists for zero dynamic allocation on the hot path.
   - **Intrusive Doubly-Linked Lists** for price levels, providing true $O(1)$ unlinking for order cancellations (~700 ns) regardless of queue depth.
   - Integer arithmetic for prices and quantities (`u64` tick units, no floating-point rounding errors).
@@ -64,15 +65,17 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 ├── benches/
 │   ├── orderbook_bench.rs         # Criterion benchmarks for placement, matching, and cancel
 │   ├── cancellation_scaling.rs    # Depth scaling benchmark (100 to 5,000 orders)
-│   └── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
+│   ├── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
+│   └── flat_vs_btree_bench.rs     # Direct-indexed flat array vs BTreeMap lookup benchmark
 ├── docs/
-│   └── notes/                     # Architecture Decision Records (001 to 026)
+│   └── notes/                     # Architecture Decision Records (001 to 029)
 ├── src/
 │   ├── bin/
 │   │   └── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
 │   ├── arena.rs                   # Pre-allocated slot pool & intrusive doubly-linked list
 │   ├── dedup.rs                   # Zero-allocation sliding deduplication filter
 │   ├── engine.rs                  # Single-writer matching engine event loop
+│   ├── flat_book.rs               # Direct-indexed flat tick array & bitset scanning
 │   ├── gateway.rs                 # Dual-port TCP gateway (Inbound 9001, Outbound 9002)
 │   ├── latency.rs                 # Direct CPU cycle timer & high-res latency histogram
 │   ├── lib.rs                     # Core library exports
