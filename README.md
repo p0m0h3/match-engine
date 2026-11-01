@@ -2,7 +2,7 @@
 
 An ultra-low latency, deterministic Price-Time Priority (FIFO) market matching engine written in Rust.
 
-Designed following the single-writer architecture (LMAX Disruptor pattern) with zero heap allocations on the hot path, cache-aligned lock-free ring buffers, fixed-size binary wire protocols, Write-Ahead Logging (WAL) with atomic state snapshots, hardware-level CPU timestamping, and full end-to-end idempotency.
+Designed following the single-writer architecture (LMAX Disruptor pattern) with zero heap allocations on the hot path, cache-aligned lock-free ring buffers, fixed-size binary wire protocols, Write-Ahead Logging (WAL) with atomic state snapshots, hardware-level CPU timestamping, direct flat-array price indexing, and full end-to-end idempotency.
 
 ---
 
@@ -21,17 +21,29 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 
 > **Key takeaway**: **99% of all trades execute in $\le$ 500 nanoseconds** end-to-end across threads, with a median latency of **291 nanoseconds**.
 
+### Micro-Benchmark Summary (Criterion)
+
+| Operation | Implementation | Latency | Throughput |
+|---|---|---|---|
+| **Price Level Lookup** | `FlatTickBook` (Direct Index) | **3.25 ns** | **307 Million ops/sec** |
+| **BBO Best Price Scan** | Bitwise CLZ / CTZ | **6.30 ns** | **158 Million scans/sec** |
+| **L2 Depth Snapshot (Top 20)** | Fixed-Stack Array | **62.02 ns** | **16.1 Million snapshots/sec** |
+| **Order Cancellation** | Intrusive Doubly-Linked List | **~700 ns (flat)** | True $O(1)$ regardless of queue depth (100–5,000 orders) |
+
 ---
 
 ## Key Features
 
 - **Price-Time Priority (FIFO)**: Guaranteed primary price priority and secondary arrival-time ordering.
 - **Sub-Microsecond Latency**:
-  - Direct-Indexed **Flat Tick Array** (`FlatTickBook`) with bitset scanning: **3.25 ns** price level lookup and **6.30 ns** BBO search (~4.5x faster than `BTreeMap`).
+  - Direct-Indexed **Flat Tick Array** (`FlatTickBook`) with bitset scanning: **3.25 ns** price level lookup (~4.5x faster than `BTreeMap`).
   - Pre-allocated **contiguous slot arena** with embedded free lists for zero dynamic allocation on the hot path.
-  - **Intrusive Doubly-Linked Lists** for price levels, providing true $O(1)$ unlinking for order cancellations (~700 ns) regardless of queue depth.
+  - **Intrusive Doubly-Linked Lists** for price levels, providing true $O(1)$ unlinking for order cancellations regardless of queue depth.
   - Integer arithmetic for prices and quantities (`u64` tick units, no floating-point rounding errors).
   - Fast non-cryptographic integer hashing (`rustc-hash` / `FxHashMap`).
+- **Atomic Cancel-Replace / Order Amendment (`OrderModify`)**:
+  - **Decreasing Quantity**: In-place $O(1)$ quantity reduction retaining exact FIFO queue priority.
+  - **Increasing Quantity / Price Change**: Atomic unlinking and re-insertion at the tail of the new price level (loses priority).
 - **Hardware-Level Tick-to-Trade Profiler**:
   - Direct CPU register timestamping (`cntvct_el0` / `_rdtsc`) bypassing OS syscalls (< 2 ns measurement overhead).
   - Pre-allocated 100,000-bin latency histogram tracking 1 ns to 100 µs percentile distributions.
@@ -53,7 +65,6 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
   - **Outbound**: Strict monotonic sequence IDs (`sequence_id`) enabling downstream Kafka producers and OMS replicas to achieve Exactly-Once processing.
 - **Order Types & Execution Policies**:
   - `Limit` and `Market` orders.
-  - **Cancel-Replace / Amend (`OrderModify`)**: In-place $O(1)$ quantity decrease retaining FIFO priority; atomic re-queueing for size increases or price amendments.
   - Time-In-Force: `GTC` (Good 'Til Cancel), `IOC` (Immediate-Or-Cancel), `FOK` (Fill-Or-Kill), and `PostOnly` (Maker-Only).
   - First-class support for partial fills.
 
@@ -69,7 +80,7 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   ├── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
 │   └── flat_vs_btree_bench.rs     # Direct-indexed flat array vs BTreeMap lookup benchmark
 ├── docs/
-│   └── notes/                     # Architecture Decision Records (001 to 029)
+│   └── notes/                     # Architecture Decision Records (001 to 033)
 ├── src/
 │   ├── bin/
 │   │   ├── demo_simulation.rs     # Scripted mock end-to-end simulation
@@ -82,9 +93,9 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   ├── gateway.rs                 # Dual-port TCP gateway (Inbound 9001, Outbound 9002)
 │   ├── latency.rs                 # Direct CPU cycle timer & high-res latency histogram
 │   ├── lib.rs                     # Core library exports
-│   ├── main.rs                    # Executable demo server
+│   ├── main.rs                    # Continuous daemon server
 │   ├── market_data.rs             # L2 depth aggregation structures & deltas
-│   ├── orderbook.rs               # L3 order book matching core
+│   ├── orderbook.rs               # L3 order book matching core with hybrid Flat/Sparse book
 │   ├── ring_buffer.rs             # Cache-aligned lock-free SPSC ring buffer
 │   ├── snapshot.rs                # Atomic binary state snapshots & WAL compaction
 │   ├── types.rs                   # Strong newtypes (OrderId, Price, Quantity, Side, Trade)
@@ -141,6 +152,8 @@ cargo run --bin kafka_adapter
 
 ### Run Unit & Integration Tests
 
+Runs all 19 unit, integration, and mock tests:
+
 ```bash
 cargo test
 ```
@@ -158,6 +171,9 @@ cargo bench --bench cancellation_scaling
 
 # Top-20 L2 market depth snapshot latency
 cargo bench --bench l2_depth_bench
+
+# Direct flat array vs B-tree benchmark
+cargo bench --bench flat_vs_btree_bench
 ```
 
 ---
@@ -170,8 +186,8 @@ Sent by the OMS to port `9001`:
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `order_id` | `u64` | Unique order identifier |
-| 8 | `price` | `u64` | Limit price in tick units |
-| 16 | `quantity` | `u64` | Order size in lot units |
+| 8 | `price` | `u64` | Limit price in tick units (or new price for Modify) |
+| 16 | `quantity` | `u64` | Order size in lot units (or new quantity for Modify) |
 | 24 | `correlation_id` | `u64` | Client tracking ID echoed in responses |
 | 32 | `msg_type` | `u8` | `1` = PlaceOrder, `2` = CancelOrder, `3` = ModifyOrder, `255` = Shutdown |
 | 33 | `side` | `u8` | `0` = Buy, `1` = Sell |
