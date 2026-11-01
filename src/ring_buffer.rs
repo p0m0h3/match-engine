@@ -20,7 +20,7 @@ impl CacheAlignedAtomicUsize {
 
 /// Internal shared ring buffer storage.
 struct RingBufferInner<T, const N: usize> {
-    buffer: [UnsafeCell<Option<T>>; N],
+    buffer: Box<[UnsafeCell<Option<T>>; N]>,
     tail: CacheAlignedAtomicUsize, // Written by Producer, read by Consumer
     head: CacheAlignedAtomicUsize, // Written by Consumer, read by Producer
 }
@@ -107,8 +107,15 @@ impl<T, const N: usize> Consumer<T, N> {
 pub fn spsc_channel<T, const N: usize>() -> (Producer<T, N>, Consumer<T, N>) {
     assert!(N.is_power_of_two(), "Ring buffer capacity must be a power of two");
 
-    // Initialize fixed buffer
-    let buffer: [UnsafeCell<Option<T>>; N] = std::array::from_fn(|_| UnsafeCell::new(None));
+    // Pre-allocate fixed buffer on the heap directly to prevent stack overflow for large capacities
+    let mut vec = Vec::with_capacity(N);
+    for _ in 0..N {
+        vec.push(UnsafeCell::new(None));
+    }
+    let buffer: Box<[UnsafeCell<Option<T>>; N]> = match vec.into_boxed_slice().try_into() {
+        Ok(b) => b,
+        Err(_) => unreachable!(),
+    };
 
     let inner = Arc::new(RingBufferInner {
         buffer,
