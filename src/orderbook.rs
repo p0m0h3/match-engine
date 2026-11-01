@@ -1,6 +1,7 @@
 //! High-Performance Order Book with contiguous arena memory & intrusive doubly-linked list.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use rustc_hash::FxHashMap;
 use crate::arena::{OrderArena, PriceLevelQueue, SlotIdx};
 use crate::types::{Order, OrderId, OrderType, Price, Quantity, Side, TimeInForce, Trade};
 
@@ -24,7 +25,7 @@ pub struct OrderBook {
     /// Asks sorted ascending.
     pub asks: BTreeMap<Price, PriceLevelQueue>,
     /// Maps active OrderId -> (Price, Side, SlotIdx).
-    pub order_locations: HashMap<OrderId, (Price, Side, SlotIdx)>,
+    pub order_locations: FxHashMap<OrderId, (Price, Side, SlotIdx)>,
     /// Pre-allocated arena for zero-heap order operations.
     pub arena: OrderArena,
 }
@@ -40,7 +41,7 @@ impl OrderBook {
         Self {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
-            order_locations: HashMap::with_capacity(capacity),
+            order_locations: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
             arena: OrderArena::with_capacity(capacity),
         }
     }
