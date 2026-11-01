@@ -1,11 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use match_engine::orderbook::OrderBook;
 use match_engine::types::{Order, OrderId, Price, Quantity, Side};
 
 fn bench_passive_order_placement(c: &mut Criterion) {
     c.bench_function("passive_limit_order_placement", |b| {
         b.iter_batched(
-            || OrderBook::new(),
+            OrderBook::new,
             |mut book| {
                 for i in 1..=1_000 {
                     let order = Order::new_limit(

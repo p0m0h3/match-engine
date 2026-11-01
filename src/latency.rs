@@ -121,7 +121,11 @@ impl LatencyHistogram {
     }
 
     pub fn min_ns(&self) -> u64 {
-        if self.total_samples == 0 { 0 } else { self.min_ns }
+        if self.total_samples == 0 {
+            0
+        } else {
+            self.min_ns
+        }
     }
 
     pub fn max_ns(&self) -> u64 {

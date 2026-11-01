@@ -1,6 +1,6 @@
 //! Micro-benchmark comparing BTreeMap price-level lookup vs Direct-Indexed FlatTickBook.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use match_engine::arena::OrderArena;
 use match_engine::flat_book::FlatTickBook;
 use match_engine::types::{Order, OrderId, Price, Quantity, Side};

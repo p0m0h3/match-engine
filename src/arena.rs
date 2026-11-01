@@ -41,7 +41,11 @@ impl OrderArena {
         let mut nodes = Vec::with_capacity(capacity);
         // Pre-populate the arena nodes and link the free list
         for i in 0..capacity {
-            let next_free = if i + 1 < capacity { (i + 1) as u32 } else { SlotIdx::NONE };
+            let next_free = if i + 1 < capacity {
+                (i + 1) as u32
+            } else {
+                SlotIdx::NONE
+            };
             nodes.push(OrderNode {
                 order: Order::new_limit(
                     crate::types::OrderId(0),

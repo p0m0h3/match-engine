@@ -11,17 +11,23 @@ pub struct WireCommandFrame {
     pub price: u64,
     pub quantity: u64,
     pub correlation_id: u64,
-    pub msg_type: u8,       // 1 = Place, 2 = Cancel, 255 = Shutdown
-    pub side: u8,           // 0 = Buy, 1 = Sell
-    pub order_type: u8,     // 0 = Limit, 1 = Market
-    pub time_in_force: u8,  // 0 = GTC, 1 = IOC, 2 = FOK, 3 = PostOnly
-    pub _padding: [u8; 4],  // 8-byte natural alignment
+    pub msg_type: u8,      // 1 = Place, 2 = Cancel, 255 = Shutdown
+    pub side: u8,          // 0 = Buy, 1 = Sell
+    pub order_type: u8,    // 0 = Limit, 1 = Market
+    pub time_in_force: u8, // 0 = GTC, 1 = IOC, 2 = FOK, 3 = PostOnly
+    pub _padding: [u8; 4], // 8-byte natural alignment
 }
 
 impl WireCommandFrame {
     pub const SIZE: usize = std::mem::size_of::<Self>();
 
-    pub fn new_place_limit(order_id: u64, side: u8, price: u64, quantity: u64, correlation_id: u64) -> Self {
+    pub fn new_place_limit(
+        order_id: u64,
+        side: u8,
+        price: u64,
+        quantity: u64,
+        correlation_id: u64,
+    ) -> Self {
         Self {
             order_id,
             price,
@@ -49,7 +55,12 @@ impl WireCommandFrame {
         }
     }
 
-    pub fn new_modify(order_id: u64, new_price: u64, new_quantity: u64, correlation_id: u64) -> Self {
+    pub fn new_modify(
+        order_id: u64,
+        new_price: u64,
+        new_quantity: u64,
+        correlation_id: u64,
+    ) -> Self {
         Self {
             order_id,
             price: new_price,
@@ -110,7 +121,11 @@ impl WireCommandFrame {
             2 => Ok(EngineCommand::CancelOrder(OrderId(self.order_id))),
             3 => Ok(EngineCommand::ModifyOrder {
                 order_id: OrderId(self.order_id),
-                new_price: if self.price > 0 { Some(Price(self.price)) } else { None },
+                new_price: if self.price > 0 {
+                    Some(Price(self.price))
+                } else {
+                    None
+                },
                 new_quantity: Quantity(self.quantity),
             }),
             255 => Ok(EngineCommand::Shutdown),
@@ -119,12 +134,7 @@ impl WireCommandFrame {
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                (self as *const Self) as *const u8,
-                Self::SIZE,
-            )
-        }
+        unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::SIZE) }
     }
 
     pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
@@ -244,12 +254,7 @@ impl WireEventFrame {
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                (self as *const Self) as *const u8,
-                Self::SIZE,
-            )
-        }
+        unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::SIZE) }
     }
 
     pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {

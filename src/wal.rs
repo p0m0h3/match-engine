@@ -1,11 +1,11 @@
 //! Binary-aligned Write-Ahead Log (WAL) and Deterministic Replay Engine.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::Path;
 use crate::engine::EngineCommand;
 use crate::orderbook::OrderBook;
 use crate::types::{Order, OrderId, OrderType, Price, Quantity, Side, TimeInForce};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
 /// Magic header bytes identifying a valid match-engine WAL file ("MEWAL001").
 pub const WAL_MAGIC: [u8; 8] = *b"MEWAL001";
@@ -46,15 +46,9 @@ impl WalRecord {
                 o.price.0,
                 o.initial_quantity.0,
             ),
-            EngineCommand::CancelOrder(id) => (
-                WalCommandType::CancelOrder as u8,
-                id.0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ),
+            EngineCommand::CancelOrder(id) => {
+                (WalCommandType::CancelOrder as u8, id.0, 0, 0, 0, 0, 0)
+            }
             EngineCommand::ModifyOrder {
                 order_id,
                 new_price,
@@ -94,7 +88,9 @@ impl WalRecord {
 
     pub fn to_command(&self) -> Result<EngineCommand, &'static str> {
         // Validate checksum
-        let mut expected = (self.sequence_id ^ self.timestamp_ns ^ self.order_id ^ self.price ^ self.quantity) as u32;
+        let mut expected =
+            (self.sequence_id ^ self.timestamp_ns ^ self.order_id ^ self.price ^ self.quantity)
+                as u32;
         expected ^= ((self.command_type as u32) << 24)
             | ((self.side as u32) << 16)
             | ((self.order_type as u32) << 8)
@@ -136,7 +132,11 @@ impl WalRecord {
         } else if self.command_type == WalCommandType::ModifyOrder as u8 {
             Ok(EngineCommand::ModifyOrder {
                 order_id: OrderId(self.order_id),
-                new_price: if self.price > 0 { Some(Price(self.price)) } else { None },
+                new_price: if self.price > 0 {
+                    Some(Price(self.price))
+                } else {
+                    None
+                },
                 new_quantity: Quantity(self.quantity),
             })
         } else {
@@ -154,10 +154,7 @@ pub struct WalWriter {
 impl WalWriter {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file_exists = path.as_ref().exists();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         let mut writer = BufWriter::with_capacity(64 * 1024, file);
 
@@ -222,7 +219,8 @@ impl WalReader {
         loop {
             match reader.read_exact(&mut buffer) {
                 Ok(()) => {
-                    let record: WalRecord = unsafe { std::ptr::read(buffer.as_ptr() as *const WalRecord) };
+                    let record: WalRecord =
+                        unsafe { std::ptr::read(buffer.as_ptr() as *const WalRecord) };
                     match record.to_command() {
                         Ok(cmd) => match cmd {
                             EngineCommand::PlaceOrder(order) => {

@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use std::env;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,11 @@ use match_engine::wire::{WireCommandFrame, WireEventFrame};
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
-        eprintln!("\n[FATAL PANIC] thread '{:?}': {}\n", std::thread::current().name().unwrap_or("unnamed"), info);
+        eprintln!(
+            "\n[FATAL PANIC] thread '{:?}': {}\n",
+            std::thread::current().name().unwrap_or("unnamed"),
+            info
+        );
     }));
 
     println!("=======================================================");
@@ -26,10 +30,7 @@ fn main() {
     println!("=======================================================");
 
     let args: Vec<String> = env::args().collect();
-    let num_orders: usize = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(200_000);
+    let num_orders: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(200_000);
 
     let default_in = "127.0.0.1:9001";
     let default_out = "127.0.0.1:9002";
@@ -38,7 +39,10 @@ fn main() {
     let external_server = TcpStream::connect(default_in).is_ok();
 
     let (in_addr, out_addr, _server_guards) = if external_server {
-        println!(" [Target] Connected to existing Daemon on {} / {}", default_in, default_out);
+        println!(
+            " [Target] Connected to existing Daemon on {} / {}",
+            default_in, default_out
+        );
         (default_in.to_string(), default_out.to_string(), None)
     } else {
         println!(" [Target] Spawning embedded high-capacity engine on 127.0.0.1:19001 / 19002...");
@@ -51,7 +55,8 @@ fn main() {
         let running = Arc::new(AtomicBool::new(true));
 
         let in_handle = start_inbound_gateway(&in_addr, inbound_producer, Arc::clone(&running));
-        let out_handle = start_outbound_broadcaster(&out_addr, outbound_consumer, Arc::clone(&running));
+        let out_handle =
+            start_outbound_broadcaster(&out_addr, outbound_consumer, Arc::clone(&running));
 
         let r_engine = Arc::clone(&running);
         let engine_handle = thread::spawn(move || {
@@ -59,7 +64,11 @@ fn main() {
         });
 
         thread::sleep(Duration::from_millis(60));
-        (in_addr, out_addr, Some((running, engine_handle, in_handle, out_handle)))
+        (
+            in_addr,
+            out_addr,
+            Some((running, engine_handle, in_handle, out_handle)),
+        )
     };
 
     println!(" [Workload] Bombarding with {} mixed orders...", num_orders);
@@ -116,7 +125,16 @@ fn main() {
             }
         }
 
-        (total_events, last_seq, seq_errors, count_accepted, count_trades, count_canceled, count_modified, count_rejected)
+        (
+            total_events,
+            last_seq,
+            seq_errors,
+            count_accepted,
+            count_trades,
+            count_canceled,
+            count_modified,
+            count_rejected,
+        )
     });
 
     // 2. Connect Inbound Ingestion Stream
@@ -177,7 +195,10 @@ fn main() {
         };
 
         if let Err(e) = writer.write_all(frame.as_bytes()) {
-            panic!("Failed to write order {} (msg_type={}): {:?}", i, frame.msg_type, e);
+            panic!(
+                "Failed to write order {} (msg_type={}): {:?}",
+                i, frame.msg_type, e
+            );
         }
         sent_orders += 1;
         if i % 25_000 == 0 {
@@ -190,7 +211,9 @@ fn main() {
 
     // Send Shutdown frame to conclude benchmark
     let shutdown_frame = WireCommandFrame::new_shutdown();
-    writer.write_all(shutdown_frame.as_bytes()).expect("Failed to send shutdown");
+    writer
+        .write_all(shutdown_frame.as_bytes())
+        .expect("Failed to send shutdown");
     writer.flush().expect("Failed to flush shutdown");
 
     let (
@@ -202,7 +225,9 @@ fn main() {
         count_canceled,
         count_modified,
         count_rejected,
-    ) = subscriber_handle.join().expect("Subscriber thread panicked");
+    ) = subscriber_handle
+        .join()
+        .expect("Subscriber thread panicked");
 
     let total_duration = start_time.elapsed();
     let secs = total_duration.as_secs_f64();
@@ -210,12 +235,30 @@ fn main() {
     let events_per_sec = total_events as f64 / secs;
 
     println!("\n=== Bombardment Results ({} Orders) ===", sent_orders);
-    println!(" Total Duration:          {:.3} s ({:.2} ms)", secs, secs * 1000.0);
-    println!(" Ingestion Rate (Orders): {:>10.0} orders/sec", orders_per_sec);
-    println!(" Egress Rate (Events):    {:>10.0} events/sec", events_per_sec);
+    println!(
+        " Total Duration:          {:.3} s ({:.2} ms)",
+        secs,
+        secs * 1000.0
+    );
+    println!(
+        " Ingestion Rate (Orders): {:>10.0} orders/sec",
+        orders_per_sec
+    );
+    println!(
+        " Egress Rate (Events):    {:>10.0} events/sec",
+        events_per_sec
+    );
     println!(" Total Events Emitted:    {:>10}", total_events);
     println!(" Last Sequence ID:        {:>10}", last_seq);
-    println!(" Sequence Errors:         {:>10} {}", seq_errors, if seq_errors == 0 { "✓ (Strictly Monotonic)" } else { "✗ SEQUENCE GAP DETECTED!" });
+    println!(
+        " Sequence Errors:         {:>10} {}",
+        seq_errors,
+        if seq_errors == 0 {
+            "✓ (Strictly Monotonic)"
+        } else {
+            "✗ SEQUENCE GAP DETECTED!"
+        }
+    );
     println!("-------------------------------------------------------");
     println!(" Event Breakdown:");
     println!("   - OrderAccepted:       {:>10}", count_accepted);

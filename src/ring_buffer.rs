@@ -1,8 +1,8 @@
 //! Cache-line padded, zero-allocation Lock-Free Single-Producer Single-Consumer (SPSC) Ring Buffer.
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Cache-line aligned atomic index preventing False Sharing across CPU cores.
 #[repr(align(64))]
@@ -105,7 +105,10 @@ impl<T, const N: usize> Consumer<T, N> {
 /// Create a new bounded lock-free SPSC channel.
 /// `N` must be a power of two.
 pub fn spsc_channel<T, const N: usize>() -> (Producer<T, N>, Consumer<T, N>) {
-    assert!(N.is_power_of_two(), "Ring buffer capacity must be a power of two");
+    assert!(
+        N.is_power_of_two(),
+        "Ring buffer capacity must be a power of two"
+    );
 
     // Pre-allocate fixed buffer on the heap directly to prevent stack overflow for large capacities
     let mut vec = Vec::with_capacity(N);

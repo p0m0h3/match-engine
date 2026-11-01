@@ -70,7 +70,10 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
                     }
 
                     match book.place_order(order) {
-                        OrderPlacementResult::Accepted { trades, resting_order_id } => {
+                        OrderPlacementResult::Accepted {
+                            trades,
+                            resting_order_id,
+                        } => {
                             // If order did not rest, record to dedup filter so retries are rejected
                             if resting_order_id.is_none() {
                                 dedup_filter.record(order_id);
@@ -78,7 +81,10 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
 
                             // Emit trade events first
                             for trade in trades {
-                                push_event_spinning(&mut event_producer, EngineEvent::TradeExecuted(trade));
+                                push_event_spinning(
+                                    &mut event_producer,
+                                    EngineEvent::TradeExecuted(trade),
+                                );
                             }
                             // Emit accepted event
                             push_event_spinning(
@@ -118,29 +124,30 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
                     order_id,
                     new_price,
                     new_quantity,
-                } => {
-                    match book.modify_order(order_id, new_price, new_quantity) {
-                        Ok((modified_order, trades)) => {
-                            for trade in trades {
-                                push_event_spinning(&mut event_producer, EngineEvent::TradeExecuted(trade));
-                            }
+                } => match book.modify_order(order_id, new_price, new_quantity) {
+                    Ok((modified_order, trades)) => {
+                        for trade in trades {
                             push_event_spinning(
                                 &mut event_producer,
-                                EngineEvent::OrderModified {
-                                    order_id,
-                                    new_price: modified_order.price,
-                                    new_quantity: modified_order.leaves_quantity,
-                                },
+                                EngineEvent::TradeExecuted(trade),
                             );
                         }
-                        Err(reason) => {
-                            push_event_spinning(
-                                &mut event_producer,
-                                EngineEvent::OrderRejected { order_id, reason },
-                            );
-                        }
+                        push_event_spinning(
+                            &mut event_producer,
+                            EngineEvent::OrderModified {
+                                order_id,
+                                new_price: modified_order.price,
+                                new_quantity: modified_order.leaves_quantity,
+                            },
+                        );
                     }
-                }
+                    Err(reason) => {
+                        push_event_spinning(
+                            &mut event_producer,
+                            EngineEvent::OrderRejected { order_id, reason },
+                        );
+                    }
+                },
                 EngineCommand::Shutdown => {
                     push_event_spinning(&mut event_producer, EngineEvent::EngineShutdown);
                     break;
@@ -154,7 +161,10 @@ pub fn run_matching_engine_loop<const IN_SIZE: usize, const OUT_SIZE: usize>(
 }
 
 #[inline(always)]
-fn push_event_spinning<const N: usize>(producer: &mut Producer<EngineEvent, N>, mut event: EngineEvent) {
+fn push_event_spinning<const N: usize>(
+    producer: &mut Producer<EngineEvent, N>,
+    mut event: EngineEvent,
+) {
     loop {
         match producer.try_push(event) {
             Ok(()) => break,
@@ -233,9 +243,21 @@ mod tests {
         // 3. OrderAccepted (Order 2, not resting)
         // 4. EngineShutdown
         assert_eq!(events.len(), 4);
-        assert!(matches!(events[0], EngineEvent::OrderAccepted { order_id: OrderId(1), resting: true }));
+        assert!(matches!(
+            events[0],
+            EngineEvent::OrderAccepted {
+                order_id: OrderId(1),
+                resting: true
+            }
+        ));
         assert!(matches!(events[1], EngineEvent::TradeExecuted(_)));
-        assert!(matches!(events[2], EngineEvent::OrderAccepted { order_id: OrderId(2), resting: false }));
+        assert!(matches!(
+            events[2],
+            EngineEvent::OrderAccepted {
+                order_id: OrderId(2),
+                resting: false
+            }
+        ));
         assert!(matches!(events[3], EngineEvent::EngineShutdown));
     }
 }

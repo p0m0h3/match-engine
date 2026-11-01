@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use match_engine::orderbook::OrderBook;
 use match_engine::types::{Order, OrderId, Price, Quantity, Side};
 

@@ -65,12 +65,27 @@ fn main() {
 
     while let Ok(event) = subscriber.read_event() {
         let (seq, key, json_payload) = match event {
-            ClientEvent::OrderAccepted { sequence_id, order_id, resting, .. } => (
+            ClientEvent::OrderAccepted {
+                sequence_id,
+                order_id,
+                resting,
+                ..
+            } => (
                 sequence_id,
                 order_id.0,
-                format!("{{\"event\":\"OrderAccepted\",\"order_id\":{},\"resting\":{}}}", order_id.0, resting),
+                format!(
+                    "{{\"event\":\"OrderAccepted\",\"order_id\":{},\"resting\":{}}}",
+                    order_id.0, resting
+                ),
             ),
-            ClientEvent::TradeExecuted { sequence_id, taker_order_id, maker_order_id, price, quantity, .. } => (
+            ClientEvent::TradeExecuted {
+                sequence_id,
+                taker_order_id,
+                maker_order_id,
+                price,
+                quantity,
+                ..
+            } => (
                 sequence_id,
                 taker_order_id.0,
                 format!(
@@ -78,7 +93,13 @@ fn main() {
                     taker_order_id.0, maker_order_id.0, price.0, quantity.0
                 ),
             ),
-            ClientEvent::OrderModified { sequence_id, order_id, new_price, new_quantity, .. } => (
+            ClientEvent::OrderModified {
+                sequence_id,
+                order_id,
+                new_price,
+                new_quantity,
+                ..
+            } => (
                 sequence_id,
                 order_id.0,
                 format!(
@@ -86,21 +107,41 @@ fn main() {
                     order_id.0, new_price.0, new_quantity.0
                 ),
             ),
-            ClientEvent::OrderCancelled { sequence_id, order_id, .. } => (
+            ClientEvent::OrderCancelled {
+                sequence_id,
+                order_id,
+                ..
+            } => (
                 sequence_id,
                 order_id.0,
-                format!("{{\"event\":\"OrderCancelled\",\"order_id\":{}}}", order_id.0),
+                format!(
+                    "{{\"event\":\"OrderCancelled\",\"order_id\":{}}}",
+                    order_id.0
+                ),
             ),
-            ClientEvent::OrderRejected { sequence_id, order_id, .. } => (
+            ClientEvent::OrderRejected {
+                sequence_id,
+                order_id,
+                ..
+            } => (
                 sequence_id,
                 order_id.0,
-                format!("{{\"event\":\"OrderRejected\",\"order_id\":{}}}", order_id.0),
+                format!(
+                    "{{\"event\":\"OrderRejected\",\"order_id\":{}}}",
+                    order_id.0
+                ),
             ),
             ClientEvent::EngineShutdown { sequence_id, .. } => {
-                println!("EngineShutdown event #{} received from match engine. Exiting cleanly.", sequence_id);
+                println!(
+                    "EngineShutdown event #{} received from match engine. Exiting cleanly.",
+                    sequence_id
+                );
                 break;
             }
-            ClientEvent::Unknown { sequence_id, event_type } => (
+            ClientEvent::Unknown {
+                sequence_id,
+                event_type,
+            } => (
                 sequence_id,
                 0,
                 format!("{{\"event\":\"Unknown\",\"type\":{}}}", event_type),

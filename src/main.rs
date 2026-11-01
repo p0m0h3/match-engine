@@ -1,8 +1,8 @@
 //! High-Performance Continuous Match Engine Daemon Server.
 //! Runs continuously until interrupted by SIGINT / SIGTERM / Ctrl+C.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 

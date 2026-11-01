@@ -16,7 +16,7 @@ pub struct FlatTickBook<const CAPACITY: usize> {
 impl<const CAPACITY: usize> FlatTickBook<CAPACITY> {
     pub fn new(min_price: u64) -> Self {
         let max_price = min_price + CAPACITY as u64;
-        let bitmap_words = (CAPACITY + 63) / 64;
+        let bitmap_words = CAPACITY.div_ceil(64);
 
         Self {
             min_price,
@@ -62,7 +62,12 @@ impl<const CAPACITY: usize> FlatTickBook<CAPACITY> {
 
     /// Append order to tail of price level in O(1).
     #[inline(always)]
-    pub fn push_back(&mut self, arena: &mut OrderArena, price: Price, slot: SlotIdx) -> Result<(), &'static str> {
+    pub fn push_back(
+        &mut self,
+        arena: &mut OrderArena,
+        price: Price,
+        slot: SlotIdx,
+    ) -> Result<(), &'static str> {
         if !self.in_bounds(price) {
             return Err("Price out of bounds for direct-indexed array");
         }

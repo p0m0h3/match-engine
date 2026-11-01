@@ -1,11 +1,11 @@
 //! High-Performance Order Book with contiguous arena memory, intrusive doubly-linked list,
 //! and Direct-Indexed FlatTickBook price indexing.
 
-use std::collections::BTreeMap;
-use rustc_hash::FxHashMap;
 use crate::arena::{OrderArena, PriceLevelQueue, SlotIdx};
 use crate::flat_book::FlatTickBook;
 use crate::types::{Order, OrderId, OrderType, Price, Quantity, Side, TimeInForce, Trade};
+use rustc_hash::FxHashMap;
+use std::collections::BTreeMap;
 
 /// Result of placing an order into the order book.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +31,12 @@ pub struct OrderBook {
     pub order_locations: FxHashMap<OrderId, (Price, Side, SlotIdx)>,
     /// Pre-allocated arena for zero-heap order operations.
     pub arena: OrderArena,
+}
+
+impl Default for OrderBook {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OrderBook {
@@ -93,10 +99,8 @@ impl OrderBook {
             if snapshot.bid_count >= DEPTH {
                 break;
             }
-            snapshot.bids[snapshot.bid_count] = crate::market_data::DepthLevel::new(
-                price,
-                Quantity(queue.total_quantity),
-            );
+            snapshot.bids[snapshot.bid_count] =
+                crate::market_data::DepthLevel::new(price, Quantity(queue.total_quantity));
             snapshot.bid_count += 1;
         }
 
@@ -104,10 +108,8 @@ impl OrderBook {
             if snapshot.ask_count >= DEPTH {
                 break;
             }
-            snapshot.asks[snapshot.ask_count] = crate::market_data::DepthLevel::new(
-                price,
-                Quantity(queue.total_quantity),
-            );
+            snapshot.asks[snapshot.ask_count] =
+                crate::market_data::DepthLevel::new(price, Quantity(queue.total_quantity));
             snapshot.ask_count += 1;
         }
 
@@ -126,8 +128,8 @@ impl OrderBook {
         // 1. Post-Only check
         if order.time_in_force == TimeInForce::PostOnly {
             let would_cross = match order.side {
-                Side::Buy => self.best_ask().map_or(false, |ask| order.price >= ask),
-                Side::Sell => self.best_bid().map_or(false, |bid| order.price <= bid),
+                Side::Buy => self.best_ask().is_some_and(|ask| order.price >= ask),
+                Side::Sell => self.best_bid().is_some_and(|bid| order.price <= bid),
             };
             if would_cross {
                 return OrderPlacementResult::Rejected {
@@ -138,7 +140,11 @@ impl OrderBook {
 
         // 2. FOK (Fill-Or-Kill) check
         if order.time_in_force == TimeInForce::Fok {
-            let available_qty = self.simulated_available_liquidity(order.side.opposite(), order.price, order.order_type);
+            let available_qty = self.simulated_available_liquidity(
+                order.side.opposite(),
+                order.price,
+                order.order_type,
+            );
             if available_qty < order.leaves_quantity.0 {
                 return OrderPlacementResult::Rejected {
                     reason: "Fill-or-kill order cannot be fully filled immediately",
@@ -171,7 +177,12 @@ impl OrderBook {
                                 }
                                 let slot = SlotIdx(queue.head);
                                 let node = self.arena.get(slot);
-                                (slot, node.order.leaves_quantity.0, node.order.id, node.order.price)
+                                (
+                                    slot,
+                                    node.order.leaves_quantity.0,
+                                    node.order.id,
+                                    node.order.price,
+                                )
                             };
 
                             let match_qty = order.leaves_quantity.0.min(resting_leaves);
@@ -196,7 +207,8 @@ impl OrderBook {
                             });
 
                             if leaves_after == 0 {
-                                let filled_slot = self.flat_asks.pop_front(&mut self.arena, best_ask).unwrap();
+                                let filled_slot =
+                                    self.flat_asks.pop_front(&mut self.arena, best_ask).unwrap();
                                 let filled_order_id = self.arena.get(filled_slot).order.id;
                                 self.order_locations.remove(&filled_order_id);
                                 self.arena.dealloc(filled_slot);
@@ -209,7 +221,10 @@ impl OrderBook {
                         while order.leaves_quantity.0 > 0 && !queue.is_empty() {
                             let resting_slot = SlotIdx(queue.head);
                             let resting_node = self.arena.get_mut(resting_slot);
-                            let match_qty = order.leaves_quantity.0.min(resting_node.order.leaves_quantity.0);
+                            let match_qty = order
+                                .leaves_quantity
+                                .0
+                                .min(resting_node.order.leaves_quantity.0);
 
                             order.leaves_quantity.0 -= match_qty;
                             resting_node.order.leaves_quantity.0 -= match_qty;
@@ -239,7 +254,10 @@ impl OrderBook {
 
                 // 4. Residual handling
                 let can_rest = order.order_type == OrderType::Limit
-                    && matches!(order.time_in_force, TimeInForce::Gtc | TimeInForce::PostOnly);
+                    && matches!(
+                        order.time_in_force,
+                        TimeInForce::Gtc | TimeInForce::PostOnly
+                    );
 
                 if !order.is_filled() && can_rest {
                     let order_id = order.id;
@@ -250,7 +268,9 @@ impl OrderBook {
                         Ok(slot) => {
                             self.order_locations.insert(order_id, (price, side, slot));
                             if self.flat_bids.in_bounds(price) {
-                                self.flat_bids.push_back(&mut self.arena, price, slot).unwrap();
+                                self.flat_bids
+                                    .push_back(&mut self.arena, price, slot)
+                                    .unwrap();
                             } else {
                                 self.sparse_bids
                                     .entry(std::cmp::Reverse(price))
@@ -293,7 +313,12 @@ impl OrderBook {
                                 }
                                 let slot = SlotIdx(queue.head);
                                 let node = self.arena.get(slot);
-                                (slot, node.order.leaves_quantity.0, node.order.id, node.order.price)
+                                (
+                                    slot,
+                                    node.order.leaves_quantity.0,
+                                    node.order.id,
+                                    node.order.price,
+                                )
                             };
 
                             let match_qty = order.leaves_quantity.0.min(resting_leaves);
@@ -318,7 +343,8 @@ impl OrderBook {
                             });
 
                             if leaves_after == 0 {
-                                let filled_slot = self.flat_bids.pop_front(&mut self.arena, best_bid).unwrap();
+                                let filled_slot =
+                                    self.flat_bids.pop_front(&mut self.arena, best_bid).unwrap();
                                 let filled_order_id = self.arena.get(filled_slot).order.id;
                                 self.order_locations.remove(&filled_order_id);
                                 self.arena.dealloc(filled_slot);
@@ -331,7 +357,10 @@ impl OrderBook {
                         while order.leaves_quantity.0 > 0 && !queue.is_empty() {
                             let resting_slot = SlotIdx(queue.head);
                             let resting_node = self.arena.get_mut(resting_slot);
-                            let match_qty = order.leaves_quantity.0.min(resting_node.order.leaves_quantity.0);
+                            let match_qty = order
+                                .leaves_quantity
+                                .0
+                                .min(resting_node.order.leaves_quantity.0);
 
                             order.leaves_quantity.0 -= match_qty;
                             resting_node.order.leaves_quantity.0 -= match_qty;
@@ -361,7 +390,10 @@ impl OrderBook {
 
                 // 4. Residual handling
                 let can_rest = order.order_type == OrderType::Limit
-                    && matches!(order.time_in_force, TimeInForce::Gtc | TimeInForce::PostOnly);
+                    && matches!(
+                        order.time_in_force,
+                        TimeInForce::Gtc | TimeInForce::PostOnly
+                    );
 
                 if !order.is_filled() && can_rest {
                     let order_id = order.id;
@@ -372,7 +404,9 @@ impl OrderBook {
                         Ok(slot) => {
                             self.order_locations.insert(order_id, (price, side, slot));
                             if self.flat_asks.in_bounds(price) {
-                                self.flat_asks.push_back(&mut self.arena, price, slot).unwrap();
+                                self.flat_asks
+                                    .push_back(&mut self.arena, price, slot)
+                                    .unwrap();
                             } else {
                                 self.sparse_asks
                                     .entry(price)
@@ -430,7 +464,8 @@ impl OrderBook {
                     if self.flat_bids.in_bounds(price) {
                         let queue = self.flat_bids.get_level_mut(price).unwrap();
                         queue.total_quantity -= delta;
-                    } else if let Some(queue) = self.sparse_bids.get_mut(&std::cmp::Reverse(price)) {
+                    } else if let Some(queue) = self.sparse_bids.get_mut(&std::cmp::Reverse(price))
+                    {
                         queue.total_quantity -= delta;
                     }
                 }
@@ -496,7 +531,12 @@ impl OrderBook {
         Some(cancelled_order)
     }
 
-    fn simulated_available_liquidity(&self, opposing_side: Side, limit_price: Price, order_type: OrderType) -> u64 {
+    fn simulated_available_liquidity(
+        &self,
+        opposing_side: Side,
+        limit_price: Price,
+        order_type: OrderType,
+    ) -> u64 {
         let mut total = 0;
         match opposing_side {
             Side::Sell => {
@@ -527,11 +567,21 @@ mod tests {
     #[test]
     fn test_duplicate_active_order_rejected() {
         let mut book = OrderBook::new();
-        let res1 = book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        let res1 = book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
         assert!(matches!(res1, OrderPlacementResult::Accepted { .. }));
 
         // Attempt to submit identical OrderId while active
-        let res2 = book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
+        let res2 = book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
         assert!(matches!(res2, OrderPlacementResult::Rejected { .. }));
     }
 
@@ -540,8 +590,18 @@ mod tests {
         let mut book = OrderBook::new();
 
         // Seed two orders at price 100: Order 1 (10 units), Order 2 (20 units)
-        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
-        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(20)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(2),
+            Side::Buy,
+            Price(100),
+            Quantity(20),
+        ));
 
         // Modify Order 1 down from 10 to 4 units
         let (modified, trades) = book.modify_order(OrderId(1), None, Quantity(4)).unwrap();
@@ -554,7 +614,12 @@ mod tests {
 
         // Submit crossing sell for 5 units:
         // Order 1 should fill completely (4 units) FIRST, proving priority retention!
-        let res = book.place_order(Order::new_limit(OrderId(3), Side::Sell, Price(100), Quantity(5)));
+        let res = book.place_order(Order::new_limit(
+            OrderId(3),
+            Side::Sell,
+            Price(100),
+            Quantity(5),
+        ));
         if let OrderPlacementResult::Accepted { trades, .. } = res {
             assert_eq!(trades.len(), 2);
             assert_eq!(trades[0].maker_order_id, OrderId(1));
@@ -571,8 +636,18 @@ mod tests {
         let mut book = OrderBook::new();
 
         // Seed two orders at price 100: Order 1 (10 units), Order 2 (20 units)
-        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
-        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(20)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(2),
+            Side::Buy,
+            Price(100),
+            Quantity(20),
+        ));
 
         // Modify Order 1 UP from 10 to 15 units (loses priority, moves to back behind Order 2)
         let (modified, _) = book.modify_order(OrderId(1), None, Quantity(15)).unwrap();
@@ -580,7 +655,12 @@ mod tests {
 
         // Submit crossing sell for 10 units:
         // Order 2 must match FIRST because Order 1 lost priority!
-        let res = book.place_order(Order::new_limit(OrderId(3), Side::Sell, Price(100), Quantity(10)));
+        let res = book.place_order(Order::new_limit(
+            OrderId(3),
+            Side::Sell,
+            Price(100),
+            Quantity(10),
+        ));
         if let OrderPlacementResult::Accepted { trades, .. } = res {
             assert_eq!(trades.len(), 1);
             assert_eq!(trades[0].maker_order_id, OrderId(2)); // Order 2 was head of queue!
@@ -594,12 +674,37 @@ mod tests {
     fn test_l2_snapshot_aggregation() {
         let mut book = OrderBook::new();
 
-        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
-        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(25)));
-        book.place_order(Order::new_limit(OrderId(3), Side::Buy, Price(99), Quantity(15)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(2),
+            Side::Buy,
+            Price(100),
+            Quantity(25),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(3),
+            Side::Buy,
+            Price(99),
+            Quantity(15),
+        ));
 
-        book.place_order(Order::new_limit(OrderId(4), Side::Sell, Price(101), Quantity(5)));
-        book.place_order(Order::new_limit(OrderId(5), Side::Sell, Price(102), Quantity(40)));
+        book.place_order(Order::new_limit(
+            OrderId(4),
+            Side::Sell,
+            Price(101),
+            Quantity(5),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(5),
+            Side::Sell,
+            Price(102),
+            Quantity(40),
+        ));
 
         let snapshot = book.get_l2_snapshot::<5>();
 
@@ -620,12 +725,31 @@ mod tests {
     fn test_partial_fill_fifo_queue() {
         let mut book = OrderBook::new();
 
-        book.place_order(Order::new_limit(OrderId(1), Side::Sell, Price(100), Quantity(10)));
-        book.place_order(Order::new_limit(OrderId(2), Side::Sell, Price(100), Quantity(15)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Sell,
+            Price(100),
+            Quantity(10),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(2),
+            Side::Sell,
+            Price(100),
+            Quantity(15),
+        ));
 
-        let res = book.place_order(Order::new_limit(OrderId(3), Side::Buy, Price(100), Quantity(14)));
+        let res = book.place_order(Order::new_limit(
+            OrderId(3),
+            Side::Buy,
+            Price(100),
+            Quantity(14),
+        ));
 
-        if let OrderPlacementResult::Accepted { trades, resting_order_id } = res {
+        if let OrderPlacementResult::Accepted {
+            trades,
+            resting_order_id,
+        } = res
+        {
             assert_eq!(trades.len(), 2);
             assert_eq!(resting_order_id, None);
 
@@ -646,9 +770,24 @@ mod tests {
     #[test]
     fn test_cancel_order_o1() {
         let mut book = OrderBook::new();
-        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
-        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(100), Quantity(20)));
-        book.place_order(Order::new_limit(OrderId(3), Side::Buy, Price(100), Quantity(30)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(2),
+            Side::Buy,
+            Price(100),
+            Quantity(20),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(3),
+            Side::Buy,
+            Price(100),
+            Quantity(30),
+        ));
 
         let cancelled = book.cancel_order(OrderId(2));
         assert!(cancelled.is_some());
@@ -662,7 +801,12 @@ mod tests {
     #[test]
     fn test_post_only_rejection() {
         let mut book = OrderBook::new();
-        book.place_order(Order::new_limit(OrderId(1), Side::Sell, Price(100), Quantity(10)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Sell,
+            Price(100),
+            Quantity(10),
+        ));
 
         let post_only = Order::new(
             OrderId(2),
@@ -680,7 +824,12 @@ mod tests {
     #[test]
     fn test_fok_policy() {
         let mut book = OrderBook::new();
-        book.place_order(Order::new_limit(OrderId(1), Side::Sell, Price(100), Quantity(10)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Sell,
+            Price(100),
+            Quantity(10),
+        ));
 
         let fok_order = Order::new(
             OrderId(2),

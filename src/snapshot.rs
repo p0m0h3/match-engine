@@ -38,7 +38,7 @@ impl SnapshotManager {
         let mut active_orders = Vec::with_capacity(book.order_locations.len());
 
         // Extract resting orders
-        for (_, (_, _, slot)) in &book.order_locations {
+        for (_, _, slot) in book.order_locations.values() {
             let order = book.arena.get(*slot).order;
             active_orders.push(order);
         }
@@ -75,10 +75,7 @@ impl SnapshotManager {
             // 2. Write Orders
             for order in &active_orders {
                 let order_bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        (order as *const Order) as *const u8,
-                        order_size,
-                    )
+                    std::slice::from_raw_parts((order as *const Order) as *const u8, order_size)
                 };
                 writer.write_all(order_bytes)?;
             }
@@ -103,16 +100,13 @@ impl SnapshotManager {
         for entry in fs::read_dir(&self.dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("bin") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Some(seq_str) = stem.strip_prefix("snapshot_") {
-                        if let Ok(seq) = seq_str.parse::<u64>() {
-                            if latest.as_ref().map_or(true, |(curr_seq, _)| seq > *curr_seq) {
-                                latest = Some((seq, path));
-                            }
-                        }
-                    }
-                }
+            if path.extension().and_then(|s| s.to_str()) == Some("bin")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && let Some(seq_str) = stem.strip_prefix("snapshot_")
+                && let Ok(seq) = seq_str.parse::<u64>()
+                && latest.as_ref().is_none_or(|(curr_seq, _)| seq > *curr_seq)
+            {
+                latest = Some((seq, path));
             }
         }
 
@@ -127,9 +121,8 @@ impl SnapshotManager {
         let mut header_buf = vec![0u8; std::mem::size_of::<SnapshotHeader>()];
         reader.read_exact(&mut header_buf)?;
 
-        let header: SnapshotHeader = unsafe {
-            std::ptr::read(header_buf.as_ptr() as *const SnapshotHeader)
-        };
+        let header: SnapshotHeader =
+            unsafe { std::ptr::read(header_buf.as_ptr() as *const SnapshotHeader) };
 
         if header.magic != SNAPSHOT_MAGIC {
             return Err(io::Error::new(
@@ -144,9 +137,7 @@ impl SnapshotManager {
 
         for _ in 0..header.order_count {
             reader.read_exact(&mut order_buf)?;
-            let order: Order = unsafe {
-                std::ptr::read(order_buf.as_ptr() as *const Order)
-            };
+            let order: Order = unsafe { std::ptr::read(order_buf.as_ptr() as *const Order) };
 
             computed_checksum ^= order.id.0 ^ order.price.0 ^ order.leaves_quantity.0;
 
@@ -155,16 +146,19 @@ impl SnapshotManager {
             let price = order.price;
             let side = order.side;
 
-            let slot = book.arena.alloc(order).map_err(|e| {
-                io::Error::new(io::ErrorKind::OutOfMemory, e)
-            })?;
+            let slot = book
+                .arena
+                .alloc(order)
+                .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e))?;
 
             book.order_locations.insert(order_id, (price, side, slot));
 
             match side {
                 crate::types::Side::Buy => {
                     if book.flat_bids.in_bounds(price) {
-                        book.flat_bids.push_back(&mut book.arena, price, slot).unwrap();
+                        book.flat_bids
+                            .push_back(&mut book.arena, price, slot)
+                            .unwrap();
                     } else {
                         book.sparse_bids
                             .entry(std::cmp::Reverse(price))
@@ -174,7 +168,9 @@ impl SnapshotManager {
                 }
                 crate::types::Side::Sell => {
                     if book.flat_asks.in_bounds(price) {
-                        book.flat_asks.push_back(&mut book.arena, price, slot).unwrap();
+                        book.flat_asks
+                            .push_back(&mut book.arena, price, slot)
+                            .unwrap();
                     } else {
                         book.sparse_asks
                             .entry(price)
@@ -208,9 +204,24 @@ mod tests {
 
         // 1. Setup order book with 3 resting orders
         let mut book = OrderBook::new();
-        book.place_order(Order::new_limit(OrderId(1), Side::Buy, Price(100), Quantity(10)));
-        book.place_order(Order::new_limit(OrderId(2), Side::Buy, Price(99), Quantity(25)));
-        book.place_order(Order::new_limit(OrderId(3), Side::Sell, Price(105), Quantity(50)));
+        book.place_order(Order::new_limit(
+            OrderId(1),
+            Side::Buy,
+            Price(100),
+            Quantity(10),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(2),
+            Side::Buy,
+            Price(99),
+            Quantity(25),
+        ));
+        book.place_order(Order::new_limit(
+            OrderId(3),
+            Side::Sell,
+            Price(105),
+            Quantity(50),
+        ));
 
         assert_eq!(book.best_bid(), Some(Price(100)));
         assert_eq!(book.best_ask(), Some(Price(105)));

@@ -1,7 +1,9 @@
 //! Dedicated benchmark measuring Tick-to-Trade (T2T) latency distributions.
 
-use match_engine::engine::{run_matching_engine_loop, EngineCommand, EngineEvent};
-use match_engine::latency::{cycles_to_nanos, hardware_timer_frequency_hz, read_hardware_counter, LatencyHistogram};
+use match_engine::engine::{EngineCommand, EngineEvent, run_matching_engine_loop};
+use match_engine::latency::{
+    LatencyHistogram, cycles_to_nanos, hardware_timer_frequency_hz, read_hardware_counter,
+};
 use match_engine::ring_buffer::spsc_channel;
 use match_engine::types::{Order, OrderId, Price, Quantity, Side};
 use std::thread;
@@ -16,7 +18,10 @@ fn main() {
     let (engine_event_producer, mut outbound_consumer) = spsc_channel::<EngineEvent, CAPACITY>();
 
     let freq = hardware_timer_frequency_hz();
-    println!("Hardware Timer Frequency: {:.2} MHz", freq as f64 / 1_000_000.0);
+    println!(
+        "Hardware Timer Frequency: {:.2} MHz",
+        freq as f64 / 1_000_000.0
+    );
 
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r_engine = std::sync::Arc::clone(&running);
@@ -36,7 +41,10 @@ fn main() {
             Price(1000 + (i as u64)),
             Quantity(1_000_000), // Deep liquidity
         );
-        while cmd_producer.try_push(EngineCommand::PlaceOrder(ask)).is_err() {
+        while cmd_producer
+            .try_push(EngineCommand::PlaceOrder(ask))
+            .is_err()
+        {
             core::hint::spin_loop();
         }
     }
@@ -51,7 +59,10 @@ fn main() {
         }
     }
 
-    println!("Warm-up complete. Profiling {} crossing trades across threads...", NUM_ORDERS);
+    println!(
+        "Warm-up complete. Profiling {} crossing trades across threads...",
+        NUM_ORDERS
+    );
 
     // Profile T2T:
     // T0: Taken immediately before pushing aggressive buy command into SPSC ring buffer
@@ -67,7 +78,10 @@ fn main() {
         let t0 = read_hardware_counter();
 
         // Push order
-        while cmd_producer.try_push(EngineCommand::PlaceOrder(taker_order)).is_err() {
+        while cmd_producer
+            .try_push(EngineCommand::PlaceOrder(taker_order))
+            .is_err()
+        {
             core::hint::spin_loop();
         }
 
@@ -99,7 +113,10 @@ fn main() {
     cmd_producer.try_push(EngineCommand::Shutdown).unwrap();
     engine_handle.join().unwrap();
 
-    println!("\n=== Tick-to-Trade (T2T) Profile Results ({} Samples) ===", histogram.total_samples());
+    println!(
+        "\n=== Tick-to-Trade (T2T) Profile Results ({} Samples) ===",
+        histogram.total_samples()
+    );
     println!("Min Latency:   {:>6} ns", histogram.min_ns());
     println!("Mean Latency:  {:>9.2} ns", histogram.mean_ns());
     println!("P50 (Median):  {:>6} ns", histogram.percentile(50.0));

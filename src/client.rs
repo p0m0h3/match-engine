@@ -68,7 +68,10 @@ impl InboundClient {
     }
 
     /// Connect with a custom buffer size for tuning network batching.
-    pub fn connect_with_buffer_size<A: ToSocketAddrs>(addr: A, buffer_size: usize) -> io::Result<Self> {
+    pub fn connect_with_buffer_size<A: ToSocketAddrs>(
+        addr: A,
+        buffer_size: usize,
+    ) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
         stream.set_nodelay(true)?;
         Ok(Self {
@@ -117,7 +120,14 @@ impl InboundClient {
         quantity: Quantity,
         correlation_id: u64,
     ) -> io::Result<()> {
-        self.place_limit(order_id, side, price, quantity, TimeInForce::Gtc, correlation_id)
+        self.place_limit(
+            order_id,
+            side,
+            price,
+            quantity,
+            TimeInForce::Gtc,
+            correlation_id,
+        )
     }
 
     /// Helper for placing a Post-Only (Maker-Only) limit order.
@@ -129,7 +139,14 @@ impl InboundClient {
         quantity: Quantity,
         correlation_id: u64,
     ) -> io::Result<()> {
-        self.place_limit(order_id, side, price, quantity, TimeInForce::PostOnly, correlation_id)
+        self.place_limit(
+            order_id,
+            side,
+            price,
+            quantity,
+            TimeInForce::PostOnly,
+            correlation_id,
+        )
     }
 
     /// Submit an Immediate-Or-Cancel (IOC) Market Order.
@@ -150,7 +167,7 @@ impl InboundClient {
                 Side::Buy => 0,
                 Side::Sell => 1,
             },
-            order_type: 1, // Market
+            order_type: 1,    // Market
             time_in_force: 1, // IOC
             _padding: [0; 4],
         };
@@ -209,7 +226,10 @@ impl EventSubscriber {
     }
 
     /// Connect with a custom buffer size.
-    pub fn connect_with_buffer_size<A: ToSocketAddrs>(addr: A, buffer_size: usize) -> io::Result<Self> {
+    pub fn connect_with_buffer_size<A: ToSocketAddrs>(
+        addr: A,
+        buffer_size: usize,
+    ) -> io::Result<Self> {
         let stream = TcpStream::connect(addr)?;
         stream.set_nodelay(true)?;
         stream.set_nonblocking(false)?;
@@ -304,20 +324,23 @@ impl MatchEngineClient {
     pub fn connect<A: ToSocketAddrs + Copy>(inbound_addr: A, outbound_addr: A) -> io::Result<Self> {
         let subscriber = EventSubscriber::connect(outbound_addr)?;
         let inbound = InboundClient::connect(inbound_addr)?;
-        Ok(Self { inbound, subscriber })
+        Ok(Self {
+            inbound,
+            subscriber,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Duration;
     use crate::engine::run_matching_engine_loop;
     use crate::gateway::{start_inbound_gateway, start_outbound_broadcaster};
     use crate::ring_buffer::spsc_channel;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_client_library_end_to_end() {
@@ -330,7 +353,8 @@ mod tests {
         let running = Arc::new(AtomicBool::new(true));
 
         let in_handle = start_inbound_gateway(in_addr, inbound_producer, Arc::clone(&running));
-        let out_handle = start_outbound_broadcaster(out_addr, outbound_consumer, Arc::clone(&running));
+        let out_handle =
+            start_outbound_broadcaster(out_addr, outbound_consumer, Arc::clone(&running));
 
         let r_engine = Arc::clone(&running);
         let engine_handle = thread::spawn(move || {
@@ -340,7 +364,8 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
 
         // Connect client using unified MatchEngineClient
-        let mut client = MatchEngineClient::connect(in_addr, out_addr).expect("Client failed to connect");
+        let mut client =
+            MatchEngineClient::connect(in_addr, out_addr).expect("Client failed to connect");
 
         // 1. Submit Resting Maker Sell Order
         client

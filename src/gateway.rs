@@ -2,8 +2,8 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -99,9 +99,7 @@ pub fn start_outbound_broadcaster<const N: usize>(
                 let bytes = wire_frame.as_bytes();
 
                 // Fan-out to all connected subscribers (e.g., Kafka Bridge)
-                connected_clients.retain_mut(|client| {
-                    client.write_all(bytes).is_ok()
-                });
+                connected_clients.retain_mut(|client| client.write_all(bytes).is_ok());
 
                 if is_shutdown {
                     break;
@@ -141,7 +139,8 @@ mod tests {
         let in_handle = start_inbound_gateway(in_addr, inbound_producer, Arc::clone(&running));
 
         // 2. Start Outbound Broadcaster
-        let out_handle = start_outbound_broadcaster(out_addr, outbound_consumer, Arc::clone(&running));
+        let out_handle =
+            start_outbound_broadcaster(out_addr, outbound_consumer, Arc::clone(&running));
 
         // 3. Start Core Engine Loop
         let r_engine = Arc::clone(&running);
@@ -178,7 +177,9 @@ mod tests {
         assert_eq!(received_event.order_id, 101);
 
         // 8. OMS sends Shutdown
-        oms_client.write_all(WireCommandFrame::new_shutdown().as_bytes()).unwrap();
+        oms_client
+            .write_all(WireCommandFrame::new_shutdown().as_bytes())
+            .unwrap();
 
         // 9. Read the shutdown event on subscriber to let outbound thread finish
         subscriber.read_exact(&mut event_buf).unwrap();

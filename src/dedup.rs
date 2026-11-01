@@ -1,7 +1,7 @@
 //! Zero-allocation sliding deduplication filter for inbound command idempotency.
 
-use rustc_hash::FxHashSet;
 use crate::types::OrderId;
+use rustc_hash::FxHashSet;
 
 /// Sliding circular deduplication window tracking recently seen order IDs.
 /// Uses a pre-allocated fixed-size ring array and FxHashSet for O(1) membership checks.
