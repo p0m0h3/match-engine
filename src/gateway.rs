@@ -26,12 +26,14 @@ pub fn start_inbound_gateway<const N: usize>(
 
         while running.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((mut stream, _)) => {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_nodelay(true);
-                    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                    let _ = stream.set_read_timeout(None);
+                    let mut reader = std::io::BufReader::with_capacity(65_536, stream);
 
                     while running.load(Ordering::Relaxed) {
-                        match stream.read_exact(&mut buf) {
+                        match reader.read_exact(&mut buf) {
                             Ok(()) => {
                                 let mut arr = [0u8; WireCommandFrame::SIZE];
                                 arr.copy_from_slice(&buf);
@@ -48,10 +50,7 @@ pub fn start_inbound_gateway<const N: usize>(
                                     }
                                 }
                             }
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                                thread::sleep(Duration::from_millis(1));
-                            }
-                            Err(_) => break, // Client disconnected
+                            Err(_) => break, // Client disconnected or EOF
                         }
                     }
                 }
@@ -76,16 +75,19 @@ pub fn start_outbound_broadcaster<const N: usize>(
     thread::spawn(move || {
         let mut connected_clients: Vec<TcpStream> = Vec::new();
         let mut sequence_id: u64 = 0;
+        let mut idle_spins: usize = 0;
 
         while running.load(Ordering::Relaxed) {
             // Accept new translator subscribers non-blocking
             if let Ok((stream, _)) = listener.accept() {
+                let _ = stream.set_nonblocking(false);
                 let _ = stream.set_nodelay(true);
                 connected_clients.push(stream);
             }
 
             // Consume emitted events from engine ring buffer
             if let Some(event) = consumer.try_pop() {
+                idle_spins = 0;
                 sequence_id += 1;
                 let ts_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -98,7 +100,6 @@ pub fn start_outbound_broadcaster<const N: usize>(
 
                 // Fan-out to all connected subscribers (e.g., Kafka Bridge)
                 connected_clients.retain_mut(|client| {
-                    let _ = client.flush();
                     client.write_all(bytes).is_ok()
                 });
 
@@ -106,7 +107,14 @@ pub fn start_outbound_broadcaster<const N: usize>(
                     break;
                 }
             } else {
-                thread::sleep(Duration::from_millis(1));
+                idle_spins += 1;
+                if idle_spins < 64 {
+                    core::hint::spin_loop();
+                } else if idle_spins < 512 {
+                    thread::yield_now();
+                } else {
+                    thread::sleep(Duration::from_millis(1));
+                }
             }
         }
     })

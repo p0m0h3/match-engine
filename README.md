@@ -80,9 +80,10 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   ├── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
 │   └── flat_vs_btree_bench.rs     # Direct-indexed flat array vs BTreeMap lookup benchmark
 ├── docs/
-│   └── notes/                     # Architecture Decision Records (001 to 033)
+│   └── notes/                     # Architecture Decision Records (001 to 034)
 ├── src/
 │   ├── bin/
+│   │   ├── bombardment_client.rs   # 1,000,000-order TCP load and stress test client
 │   │   ├── demo_simulation.rs     # Scripted mock end-to-end simulation
 │   │   ├── kafka_adapter.rs       # Idempotent Kafka bridge adapter demonstration
 │   │   └── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
@@ -132,6 +133,33 @@ Runs a complete scripted end-to-end simulation across local TCP sockets and shut
 
 ```bash
 cargo run --bin demo_simulation
+```
+
+### Run the TCP Bombardment Load Test (1,000,000 Orders)
+
+Stresses the matching engine over real TCP loopback with 1,000,000 mixed orders (40% passive maker limits, 35% aggressive taker matches, 15% cancels, 10% modifications) while streaming and verifying 1.35M+ outbound events:
+
+```bash
+cargo run --release --bin bombardment_client -- 1000000
+```
+
+```text
+=== Bombardment Results (1000000 Orders) ===
+ Total Duration:          4.435 s (4435.22 ms)
+ Ingestion Rate (Orders):     225,468 orders/sec
+ Egress Rate (Events):        306,019 events/sec
+ Total Events Emitted:       1,357,261
+ Last Sequence ID:           1,357,261
+ Sequence Errors:                  0 ✓ (Strictly Monotonic)
+-------------------------------------------------------
+ Event Breakdown:
+   - OrderAccepted:           634,584
+   - TradeExecuted:           357,260
+   - OrderCancelled:          119,103
+   - OrderModified:            96,010
+   - OrderRejected:           150,303
+=======================================================
+ ✓ Bombardment Load Test Passed Successfully.
 ```
 
 ### Run the Live Hardware Tick-to-Trade Profiler
