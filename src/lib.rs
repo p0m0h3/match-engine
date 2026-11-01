@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod dedup;
 pub mod engine;
+pub mod flat_book;
 pub mod gateway;
 pub mod latency;
 pub mod market_data;

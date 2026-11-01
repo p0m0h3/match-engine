@@ -21,3 +21,7 @@ harness = false
 [[bench]]
 name = "l2_depth_bench"
 harness = false
+
+[[bench]]
+name = "flat_vs_btree_bench"
+harness = false
