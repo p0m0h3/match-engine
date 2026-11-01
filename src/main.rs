@@ -1,44 +1,47 @@
-use match_engine::orderbook::OrderBook;
-use match_engine::types::{Order, OrderId, Price, Quantity, Side};
+use match_engine::orderbook::{OrderBook, OrderPlacementResult};
+use match_engine::types::{Order, OrderId, OrderType, Price, Quantity, Side, TimeInForce};
 
 fn main() {
-    println!("Starting high-performance match engine...");
+    println!("=== High-Performance Match Engine ===");
 
     let mut book = OrderBook::new();
 
-    // Seed passive resting orders
-    let resting_ask = Order::new(OrderId(1), Side::Sell, Price(100), Quantity(50));
-    println!("Placing passive ask: {:?}", resting_ask);
-    book.place_limit_order(resting_ask);
+    // 1. Seed resting liquidity (Maker orders)
+    let ask1 = Order::new_limit(OrderId(1), Side::Sell, Price(100), Quantity(10));
+    let ask2 = Order::new_limit(OrderId(2), Side::Sell, Price(100), Quantity(20));
+    book.place_order(ask1);
+    book.place_order(ask2);
+    println!("Seeded Asks: 10 @ 100 (Order 1), 20 @ 100 (Order 2)");
 
-    let resting_bid = Order::new(OrderId(2), Side::Buy, Price(95), Quantity(40));
-    println!("Placing passive bid: {:?}", resting_bid);
-    book.place_limit_order(resting_bid);
+    // 2. Taker order triggers partial fills
+    let aggressive_buy = Order::new_limit(OrderId(3), Side::Buy, Price(100), Quantity(15));
+    println!("Incoming Buy for 15 @ 100 (Order 3)...");
 
-    println!(
-        "Current BBO -> Best Bid: {:?}, Best Ask: {:?}",
-        book.best_bid(),
-        book.best_ask()
-    );
-
-    // Place an aggressive crossing order
-    let aggressive_buy = Order::new(OrderId(3), Side::Buy, Price(102), Quantity(25));
-    println!("Placing aggressive crossing buy: {:?}", aggressive_buy);
-    let trades = book.place_limit_order(aggressive_buy);
-
-    println!("Trades generated ({}):", trades.len());
-    for trade in trades {
-        println!(
-            " -> Matched! Maker Order #{}, Taker Order #{}: {} units @ price {}",
-            trade.maker_order_id.0, trade.taker_order_id.0, trade.quantity.0, trade.price.0
-        );
+    if let OrderPlacementResult::Accepted { trades, .. } = book.place_order(aggressive_buy) {
+        for trade in trades {
+            println!(
+                " -> Trade: Matched {} units @ price {}. Maker #{} (leaves: {}), Taker #{} (leaves: {})",
+                trade.quantity.0,
+                trade.price.0,
+                trade.maker_order_id.0,
+                trade.maker_leaves_quantity.0,
+                trade.taker_order_id.0,
+                trade.taker_leaves_quantity.0,
+            );
+        }
     }
 
-    println!(
-        "Updated BBO -> Best Bid: {:?}, Best Ask: {:?}",
-        book.best_bid(),
-        book.best_ask()
+    // 3. Post-Only test (rejection)
+    let post_only = Order::new(
+        OrderId(4),
+        Side::Buy,
+        OrderType::Limit,
+        TimeInForce::PostOnly,
+        Price(100),
+        Quantity(5),
     );
+    let result = book.place_order(post_only);
+    println!("Post-Only order placement result: {:?}", result);
 
-    println!("Match engine executed cleanly.");
+    println!("Current BBO: Best Bid: {:?}, Best Ask: {:?}", book.best_bid(), book.best_ask());
 }
