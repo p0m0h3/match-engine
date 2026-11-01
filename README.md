@@ -282,3 +282,19 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
+---
+
+## Go Client SDK
+
+A native Go client library is available in [`match-engine-go`](file:///Users/pooria/Repos/match-engine-go):
+
+```go
+import "github.com/p0m0h3/match-engine-go/pkg/client"
+
+c, err := client.Connect("127.0.0.1:9001", "127.0.0.1:9002")
+_ = c.Inbound.PlaceGTCLimit(101, client.SideBuy, 1000, 50, 1)
+_ = c.Inbound.Flush()
+event, _ := c.Subscriber.ReadEvent()
+```
+
+
