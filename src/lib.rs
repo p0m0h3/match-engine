@@ -4,6 +4,7 @@ pub mod gateway;
 pub mod market_data;
 pub mod orderbook;
 pub mod ring_buffer;
+pub mod snapshot;
 pub mod types;
 pub mod wal;
 pub mod wire;
