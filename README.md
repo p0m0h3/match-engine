@@ -80,7 +80,7 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   ├── l2_depth_bench.rs          # L2 market depth snapshot benchmark (top 20 levels)
 │   └── flat_vs_btree_bench.rs     # Direct-indexed flat array vs BTreeMap lookup benchmark
 ├── docs/
-│   └── notes/                     # Architecture Decision Records (001 to 035)
+│   └── ARCHITECTURE.md            # Comprehensive architecture specification & design decisions
 ├── src/
 │   ├── bin/
 │   │   ├── bombardment_client.rs   # 1,000,000-order TCP load and stress test client
