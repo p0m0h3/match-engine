@@ -71,7 +71,8 @@ Measured over **100,000 real cross-thread executions** (Ingest SPSC $\rightarrow
 │   └── notes/                     # Architecture Decision Records (001 to 029)
 ├── src/
 │   ├── bin/
-│   │   └── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
+│   │   ├── latency_bench.rs       # Live hardware Tick-to-Trade (T2T) profiler
+│   │   └── kafka_adapter.rs       # Idempotent Kafka bridge adapter demonstration
 │   ├── arena.rs                   # Pre-allocated slot pool & intrusive doubly-linked list
 │   ├── dedup.rs                   # Zero-allocation sliding deduplication filter
 │   ├── engine.rs                  # Single-writer matching engine event loop
@@ -118,6 +119,14 @@ Measures nanosecond-level P50, P90, P99, and P99.9 latencies over 100,000 live c
 
 ```bash
 cargo run --release --bin latency_bench
+```
+
+### Run the Kafka Bridge Adapter
+
+Starts the standalone downstream translator connecting to Outbound Port 9002 and idempotently producing to Kafka topics:
+
+```bash
+cargo run --bin kafka_adapter
 ```
 
 ### Run Unit & Integration Tests
