@@ -3,6 +3,13 @@
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::types::{Order, OrderId, OrderType, Price, Quantity, Side, TimeInForce, Trade};
 
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "Wire protocol memory layout assumes a little-endian target architecture"
+);
+const _: () = assert!(std::mem::size_of::<WireCommandFrame>() == 40);
+const _: () = assert!(std::mem::size_of::<WireEventFrame>() == 64);
+
 /// Inbound binary frame (40 bytes fixed size).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,12 +140,40 @@ impl WireCommandFrame {
         }
     }
 
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[0..8].copy_from_slice(&self.order_id.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.price.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.quantity.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.correlation_id.to_le_bytes());
+        bytes[32] = self.msg_type;
+        bytes[33] = self.side;
+        bytes[34] = self.order_type;
+        bytes[35] = self.time_in_force;
+        bytes[36..40].copy_from_slice(&self._padding);
+        bytes
+    }
+
+    #[inline(always)]
     pub fn as_bytes(&self) -> &[u8] {
+        // Safe: target architecture is little-endian (asserted at compile time),
+        // and WireCommandFrame is #[repr(C)] with all 40 bytes explicitly initialized
+        // as struct fields (no uninitialized padding bytes).
         unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::SIZE) }
     }
 
     pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
-        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Self) }
+        Self {
+            order_id: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            price: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            quantity: u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+            correlation_id: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+            msg_type: bytes[32],
+            side: bytes[33],
+            order_type: bytes[34],
+            time_in_force: bytes[35],
+            _padding: [bytes[36], bytes[37], bytes[38], bytes[39]],
+        }
     }
 }
 
@@ -253,11 +288,74 @@ impl WireEventFrame {
         }
     }
 
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[0..8].copy_from_slice(&self.sequence_id.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.timestamp_ns.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.order_id.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.maker_order_id.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.price.to_le_bytes());
+        bytes[40..48].copy_from_slice(&self.quantity.to_le_bytes());
+        bytes[48..56].copy_from_slice(&self.leaves_quantity.to_le_bytes());
+        bytes[56] = self.event_type;
+        bytes[57..64].copy_from_slice(&self._padding);
+        bytes
+    }
+
+    #[inline(always)]
     pub fn as_bytes(&self) -> &[u8] {
+        // Safe: target architecture is little-endian (asserted at compile time),
+        // and WireEventFrame is #[repr(C)] with all 64 bytes explicitly initialized
+        // as struct fields (no uninitialized padding bytes).
         unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::SIZE) }
     }
 
     pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
-        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const Self) }
+        Self {
+            sequence_id: u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            timestamp_ns: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            order_id: u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+            maker_order_id: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+            price: u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
+            quantity: u64::from_le_bytes(bytes[40..48].try_into().unwrap()),
+            leaves_quantity: u64::from_le_bytes(bytes[48..56].try_into().unwrap()),
+            event_type: bytes[56],
+            _padding: [bytes[57], bytes[58], bytes[59], bytes[60], bytes[61], bytes[62], bytes[63]],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wire_command_frame_roundtrip() {
+        let frame = WireCommandFrame::new_place_limit(1001, 1, 55000, 250, 42);
+        let bytes = frame.to_bytes();
+        assert_eq!(bytes.len(), WireCommandFrame::SIZE);
+        assert_eq!(frame.as_bytes(), &bytes);
+
+        let decoded = WireCommandFrame::from_bytes(&bytes);
+        assert_eq!(frame, decoded);
+    }
+
+    #[test]
+    fn test_wire_event_frame_roundtrip() {
+        let event = EngineEvent::TradeExecuted(Trade {
+            maker_order_id: OrderId(101),
+            taker_order_id: OrderId(102),
+            price: Price(4500),
+            quantity: Quantity(50),
+            maker_leaves_quantity: Quantity(20),
+            taker_leaves_quantity: Quantity(0),
+        });
+        let frame = WireEventFrame::from_engine_event(777, 1_600_000_000, &event);
+        let bytes = frame.to_bytes();
+        assert_eq!(bytes.len(), WireEventFrame::SIZE);
+        assert_eq!(frame.as_bytes(), &bytes);
+
+        let decoded = WireEventFrame::from_bytes(&bytes);
+        assert_eq!(frame, decoded);
     }
 }

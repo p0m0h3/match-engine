@@ -111,7 +111,56 @@ impl Order {
     pub fn is_filled(&self) -> bool {
         self.leaves_quantity.0 == 0
     }
+
+    pub const SERIALIZED_SIZE: usize = 40;
+
+    /// Serialize order into a 40-byte little-endian binary representation with explicit field alignment.
+    pub fn to_bytes(&self) -> [u8; Self::SERIALIZED_SIZE] {
+        let mut buf = [0u8; Self::SERIALIZED_SIZE];
+        buf[0..8].copy_from_slice(&self.id.0.to_le_bytes());
+        buf[8] = self.side as u8;
+        buf[9] = self.order_type as u8;
+        buf[10] = self.time_in_force as u8;
+        // bytes 11..16 are zeroed padding for 8-byte alignment
+        buf[16..24].copy_from_slice(&self.price.0.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.initial_quantity.0.to_le_bytes());
+        buf[32..40].copy_from_slice(&self.leaves_quantity.0.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize order from a 40-byte little-endian binary payload, validating enum variants.
+    pub fn from_bytes(buf: &[u8; Self::SERIALIZED_SIZE]) -> Result<Self, &'static str> {
+        let side = match buf[8] {
+            0 => Side::Buy,
+            1 => Side::Sell,
+            _ => return Err("Invalid order side in binary payload"),
+        };
+        let order_type = match buf[9] {
+            0 => OrderType::Limit,
+            1 => OrderType::Market,
+            _ => return Err("Invalid order type in binary payload"),
+        };
+        let time_in_force = match buf[10] {
+            0 => TimeInForce::Gtc,
+            1 => TimeInForce::Ioc,
+            2 => TimeInForce::Fok,
+            3 => TimeInForce::PostOnly,
+            _ => return Err("Invalid time in force in binary payload"),
+        };
+
+        Ok(Self {
+            id: OrderId(u64::from_le_bytes(buf[0..8].try_into().unwrap())),
+            side,
+            order_type,
+            time_in_force,
+            price: Price(u64::from_le_bytes(buf[16..24].try_into().unwrap())),
+            initial_quantity: Quantity(u64::from_le_bytes(buf[24..32].try_into().unwrap())),
+            leaves_quantity: Quantity(u64::from_le_bytes(buf[32..40].try_into().unwrap())),
+        })
+    }
 }
+
+const _: () = assert!(std::mem::size_of::<Order>() == Order::SERIALIZED_SIZE);
 
 /// Execution trade record emitted when orders match.
 #[repr(C)]
@@ -123,4 +172,42 @@ pub struct Trade {
     pub quantity: Quantity,
     pub maker_leaves_quantity: Quantity,
     pub taker_leaves_quantity: Quantity,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_order_serialization_roundtrip() {
+        let order = Order::new(
+            OrderId(12345),
+            Side::Sell,
+            OrderType::Limit,
+            TimeInForce::PostOnly,
+            Price(98765),
+            Quantity(500),
+        );
+
+        let bytes = order.to_bytes();
+        assert_eq!(bytes.len(), Order::SERIALIZED_SIZE);
+
+        let decoded = Order::from_bytes(&bytes).expect("Valid order bytes should decode");
+        assert_eq!(order, decoded);
+    }
+
+    #[test]
+    fn test_order_deserialization_invalid_enums() {
+        let mut bytes = [0u8; Order::SERIALIZED_SIZE];
+        bytes[8] = 99; // invalid Side
+        assert!(Order::from_bytes(&bytes).is_err());
+
+        bytes[8] = 0; // valid Side
+        bytes[9] = 99; // invalid OrderType
+        assert!(Order::from_bytes(&bytes).is_err());
+
+        bytes[9] = 0; // valid OrderType
+        bytes[10] = 99; // invalid TimeInForce
+        assert!(Order::from_bytes(&bytes).is_err());
+    }
 }

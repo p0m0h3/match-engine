@@ -20,6 +20,34 @@ pub struct SnapshotHeader {
     pub checksum: u64,
 }
 
+impl SnapshotHeader {
+    pub const SIZE: usize = 32;
+
+    /// Serialize header to a 32-byte little-endian byte array.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[0..8].copy_from_slice(&self.magic);
+        buf[8..16].copy_from_slice(&self.last_sequence_id.to_le_bytes());
+        buf[16..24].copy_from_slice(&self.order_count.to_le_bytes());
+        buf[24..32].copy_from_slice(&self.checksum.to_le_bytes());
+        buf
+    }
+
+    /// Deserialize header from a 32-byte little-endian byte array.
+    pub fn from_bytes(buf: &[u8; Self::SIZE]) -> Self {
+        let mut magic = [0u8; 8];
+        magic.copy_from_slice(&buf[0..8]);
+        Self {
+            magic,
+            last_sequence_id: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            order_count: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            checksum: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<SnapshotHeader>() == SnapshotHeader::SIZE);
+
 pub struct SnapshotManager {
     dir: PathBuf,
 }
@@ -34,7 +62,6 @@ impl SnapshotManager {
 
     /// Save an atomic binary snapshot of all active resting orders in the order book.
     pub fn save_snapshot(&self, book: &OrderBook, last_seq: u64) -> io::Result<PathBuf> {
-        let order_size = std::mem::size_of::<Order>();
         let mut active_orders = Vec::with_capacity(book.order_locations.len());
 
         // Extract resting orders
@@ -64,20 +91,11 @@ impl SnapshotManager {
             let mut writer = BufWriter::with_capacity(64 * 1024, file);
 
             // 1. Write Header
-            let header_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    (&header as *const SnapshotHeader) as *const u8,
-                    std::mem::size_of::<SnapshotHeader>(),
-                )
-            };
-            writer.write_all(header_bytes)?;
+            writer.write_all(&header.to_bytes())?;
 
             // 2. Write Orders
             for order in &active_orders {
-                let order_bytes = unsafe {
-                    std::slice::from_raw_parts((order as *const Order) as *const u8, order_size)
-                };
-                writer.write_all(order_bytes)?;
+                writer.write_all(&order.to_bytes())?;
             }
 
             writer.flush()?;
@@ -118,11 +136,10 @@ impl SnapshotManager {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
 
-        let mut header_buf = vec![0u8; std::mem::size_of::<SnapshotHeader>()];
+        let mut header_buf = [0u8; SnapshotHeader::SIZE];
         reader.read_exact(&mut header_buf)?;
 
-        let header: SnapshotHeader =
-            unsafe { std::ptr::read(header_buf.as_ptr() as *const SnapshotHeader) };
+        let header = SnapshotHeader::from_bytes(&header_buf);
 
         if header.magic != SNAPSHOT_MAGIC {
             return Err(io::Error::new(
@@ -131,13 +148,13 @@ impl SnapshotManager {
             ));
         }
 
-        let order_size = std::mem::size_of::<Order>();
-        let mut order_buf = vec![0u8; order_size];
+        let mut order_buf = [0u8; Order::SERIALIZED_SIZE];
         let mut computed_checksum = header.last_sequence_id ^ header.order_count;
 
         for _ in 0..header.order_count {
             reader.read_exact(&mut order_buf)?;
-            let order: Order = unsafe { std::ptr::read(order_buf.as_ptr() as *const Order) };
+            let order = Order::from_bytes(&order_buf)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
             computed_checksum ^= order.id.0 ^ order.price.0 ^ order.leaves_quantity.0;
 
@@ -245,5 +262,20 @@ mod tests {
         assert_eq!(l2.bids[0].total_quantity, Quantity(10));
         assert_eq!(l2.asks[0].price, Price(105));
         assert_eq!(l2.asks[0].total_quantity, Quantity(50));
+    }
+
+    #[test]
+    fn test_snapshot_header_bytes_roundtrip() {
+        let header = SnapshotHeader {
+            magic: SNAPSHOT_MAGIC,
+            last_sequence_id: 12345,
+            order_count: 50,
+            checksum: 987654321,
+        };
+        let bytes = header.to_bytes();
+        assert_eq!(bytes.len(), SnapshotHeader::SIZE);
+
+        let decoded = SnapshotHeader::from_bytes(&bytes);
+        assert_eq!(header, decoded);
     }
 }

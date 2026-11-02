@@ -35,6 +35,43 @@ pub struct WalRecord {
 }
 
 impl WalRecord {
+    pub const SIZE: usize = 64;
+
+    /// Serialize into a 64-byte little-endian binary representation with explicit field alignment.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[0..8].copy_from_slice(&self.sequence_id.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.timestamp_ns.to_le_bytes());
+        buf[16] = self.command_type;
+        // bytes 17..24 are zeroed padding to preserve 8-byte alignment
+        buf[24..32].copy_from_slice(&self.order_id.to_le_bytes());
+        buf[32] = self.side;
+        buf[33] = self.order_type;
+        buf[34] = self.time_in_force;
+        // bytes 35..40 are zeroed padding to preserve 8-byte alignment
+        buf[40..48].copy_from_slice(&self.price.to_le_bytes());
+        buf[48..56].copy_from_slice(&self.quantity.to_le_bytes());
+        buf[56..60].copy_from_slice(&self.checksum.to_le_bytes());
+        // bytes 60..64 are zeroed padding to preserve struct 8-byte alignment
+        buf
+    }
+
+    /// Deserialize from a 64-byte little-endian binary representation.
+    pub fn from_bytes(buf: &[u8; Self::SIZE]) -> Self {
+        Self {
+            sequence_id: u64::from_le_bytes(buf[0..8].try_into().unwrap()),
+            timestamp_ns: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            command_type: buf[16],
+            order_id: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+            side: buf[32],
+            order_type: buf[33],
+            time_in_force: buf[34],
+            price: u64::from_le_bytes(buf[40..48].try_into().unwrap()),
+            quantity: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
+            checksum: u32::from_le_bytes(buf[56..60].try_into().unwrap()),
+        }
+    }
+
     pub fn from_command(seq: u64, ts_ns: u64, cmd: &EngineCommand) -> Option<Self> {
         let (cmd_type, order_id, side, o_type, tif, price, qty) = match cmd {
             EngineCommand::PlaceOrder(o) => (
@@ -145,6 +182,8 @@ impl WalRecord {
     }
 }
 
+const _: () = assert!(std::mem::size_of::<WalRecord>() == WalRecord::SIZE);
+
 /// Binary Write-Ahead Log writer.
 pub struct WalWriter {
     writer: BufWriter<File>,
@@ -177,15 +216,8 @@ impl WalWriter {
             None => return Ok(None),
         };
 
-        // Write raw struct bytes directly (zero-copy serialization)
-        let slice = unsafe {
-            std::slice::from_raw_parts(
-                (&record as *const WalRecord) as *const u8,
-                std::mem::size_of::<WalRecord>(),
-            )
-        };
-
-        self.writer.write_all(slice)?;
+        let bytes = record.to_bytes();
+        self.writer.write_all(&bytes)?;
         Ok(Some(self.current_seq))
     }
 
@@ -212,15 +244,13 @@ impl WalReader {
             ));
         }
 
-        let record_size = std::mem::size_of::<WalRecord>();
-        let mut buffer = vec![0u8; record_size];
+        let mut buffer = [0u8; WalRecord::SIZE];
         let mut last_seq = 0;
 
         loop {
             match reader.read_exact(&mut buffer) {
                 Ok(()) => {
-                    let record: WalRecord =
-                        unsafe { std::ptr::read(buffer.as_ptr() as *const WalRecord) };
+                    let record = WalRecord::from_bytes(&buffer);
                     match record.to_command() {
                         Ok(cmd) => match cmd {
                             EngineCommand::PlaceOrder(order) => {
@@ -308,5 +338,22 @@ mod tests {
         let l2 = recovered_book.get_l2_snapshot::<1>();
         assert_eq!(l2.asks[0].price, Price(100));
         assert_eq!(l2.asks[0].total_quantity, Quantity(30));
+    }
+
+    #[test]
+    fn test_wal_record_bytes_roundtrip() {
+        let cmd = EngineCommand::PlaceOrder(Order::new_limit(
+            OrderId(99),
+            Side::Buy,
+            Price(1050),
+            Quantity(25),
+        ));
+        let record = WalRecord::from_command(10, 1_000_000, &cmd).unwrap();
+        let bytes = record.to_bytes();
+        assert_eq!(bytes.len(), WalRecord::SIZE);
+
+        let decoded = WalRecord::from_bytes(&bytes);
+        assert_eq!(record, decoded);
+        assert_eq!(decoded.to_command().unwrap(), cmd);
     }
 }
